@@ -29,6 +29,9 @@ import type {
  * is stable per logical sheet, so create/activate/delete/getItem all resolve the
  * same Excel sheet.
  */
+/** Name prefix marking an engine-owned preview surface (never a user worksheet). */
+export const INTERNAL_SHEET_PREFIX = '__tl_preview_';
+
 export function toExcelSheetName(sheetId: string): string {
   if (!sheetId.startsWith(PREVIEW_SHEET_PREFIX)) {
     return sheetId;
@@ -39,8 +42,18 @@ export function toExcelSheetName(sheetId: string): string {
     hash ^= logical.charCodeAt(i);
     hash = Math.imul(hash, 0x01000193);
   }
-  // `__tl_preview_` + 8 hex = 21 chars: under Excel's 31-char limit, all legal.
-  return `__tl_preview_${(hash >>> 0).toString(16).padStart(8, '0')}`;
+  // prefix (13) + 8 hex = 21 chars: under Excel's 31-char limit, all legal.
+  return `${INTERNAL_SHEET_PREFIX}${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+/**
+ * Is this an engine-owned preview surface (not a user worksheet)? The change
+ * source uses this to ignore the add/delete of the add-in's own preview sheets,
+ * which would otherwise pollute the timeline with phantom "worksheet change"
+ * Steps every time the user previews.
+ */
+export function isInternalSheetName(name: string): boolean {
+  return name.startsWith(INTERNAL_SHEET_PREFIX);
 }
 
 /** A1-style address parsed into a zero-based rectangle. */

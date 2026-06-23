@@ -282,6 +282,10 @@ export class FakeWorksheet implements WorksheetLike {
     this.workbook.activeSheetId = this.id;
   }
 
+  load(): void {
+    // No-op: the fake's id/name/visibility are always populated.
+  }
+
   delete(): void {
     this.workbook.removeSheet(this.id);
   }
@@ -342,6 +346,9 @@ function nullSheet(): WorksheetLike & { isNullObject: boolean } {
       throw new Error('null sheet');
     },
     activate: () => {
+      /* no-op */
+    },
+    load: () => {
       /* no-op */
     },
     delete: () => {
