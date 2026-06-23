@@ -1,3 +1,4 @@
+export { compareBranches } from './branch-compare.ts';
 export { TimelinePane } from './TimelinePane.tsx';
 export { TimelinePaneContainer } from './TimelinePaneContainer.tsx';
 export { FakeTimelineDataSource } from './data-source.ts';
@@ -13,5 +14,7 @@ export type {
   TimelineHead,
   TimelinePaneProps,
   TimelineStep,
+  TimelineTheme,
   TimelineView,
 } from './contract.ts';
+export type { BranchComparison, BranchCompareStats } from './branch-compare.ts';

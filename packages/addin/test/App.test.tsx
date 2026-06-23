@@ -10,4 +10,10 @@ describe('App', () => {
     expect(screen.getByLabelText('Worksheet drill-down')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Switch to what-if branch' })).toBeInTheDocument();
   });
+
+  it('applies the requested theme to the pane', () => {
+    const { container } = render(<App theme="dark" />);
+
+    expect(container.querySelector('.timeline-pane')).toHaveAttribute('data-theme', 'dark');
+  });
 });
