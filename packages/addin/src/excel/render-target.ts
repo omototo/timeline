@@ -98,7 +98,17 @@ abstract class BaseRenderTarget implements RenderTarget {
   /** Create the preview sheet (legal name) as `VeryHidden` until activated. */
   #createPreviewSheet(previewSheetId: string): Promise<void> {
     return this.run(async (ctx) => {
-      const sheet = ctx.workbook.worksheets.add(toExcelSheetName(previewSheetId));
+      const name = toExcelSheetName(previewSheetId);
+      // Idempotent: branch()/switch() abandon a live preview without deleting its
+      // sheet, so a stale surface of this name may linger. Remove it first, so a
+      // later preview re-creates fresh instead of colliding ("already exists").
+      const existing = ctx.workbook.worksheets.getItemOrNullObject(name);
+      await ctx.sync();
+      if (existing.isNullObject !== true) {
+        existing.delete();
+        await ctx.sync();
+      }
+      const sheet = ctx.workbook.worksheets.add(name);
       sheet.visibility = 'VeryHidden';
       await ctx.sync();
     });
