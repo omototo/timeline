@@ -9,6 +9,7 @@ import {
   type OfficeReadyInfo,
 } from './office-theme.ts';
 import type { TimelineTheme } from './ui/contract.ts';
+import { createRealTimelineDataSource } from './ui/create-real-source.ts';
 import { FakeTimelineDataSource } from './ui/data-source.ts';
 import type { TimelineDataSource } from './ui/data-source.ts';
 
@@ -29,6 +30,19 @@ interface BootstrapTimelineOptions {
 function isExcelHost(info: OfficeReadyInfo, office: OfficeLike): boolean {
   const excelHost = office.HostType?.Excel ?? 'Excel';
   return info.host === excelHost || String(info.host) === 'Excel';
+}
+
+/**
+ * Build the live, Excel-backed data source, returning `undefined` if no Excel
+ * host is present or wiring fails — the caller then renders the fake-backed pane
+ * so the UI always loads.
+ */
+async function resolveLiveSource(): Promise<TimelineDataSource | undefined> {
+  try {
+    return (await createRealTimelineDataSource()) ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function renderTimelinePane({
@@ -73,11 +87,12 @@ export async function bootstrapTimeline({
   try {
     const info = await office.onReady();
     const theme = getOfficeTimelineTheme(office);
+    const inExcel = isExcelHost(info, office);
 
     renderTimelinePane({
       container,
-      source,
-      theme: isExcelHost(info, office) ? theme : 'light',
+      source: source ?? (inExcel ? await resolveLiveSource() : undefined),
+      theme: inExcel ? theme : 'light',
     });
   } catch {
     renderTimelinePane({ container, source, theme: 'light' });
