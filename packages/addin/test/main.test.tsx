@@ -52,6 +52,46 @@ describe('Office bootstrap', () => {
     expect(root.querySelector('.timeline-pane')).toHaveAttribute('data-theme', 'dark');
   });
 
+  it('falls back to light and still renders when Office.onReady rejects', async () => {
+    const root = createTaskPaneRoot();
+    const office: OfficeLike = {
+      HostType: { Excel: 'Excel' },
+      context: {
+        officeTheme: {
+          bodyBackgroundColor: '#1F1F1F',
+          isDarkTheme: true,
+        },
+      },
+      onReady: vi.fn().mockRejectedValue(new Error('Office failed to initialize')),
+    };
+
+    await bootstrapTimeline({ container: root, office });
+
+    expect(office.onReady).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole('heading', { name: 'Parametric Timeline' })).toBeInTheDocument();
+    expect(root.querySelector('.timeline-pane')).toHaveAttribute('data-theme', 'light');
+  });
+
+  it('renders the light fallback when Office is present but the host is not Excel', async () => {
+    const root = createTaskPaneRoot();
+    const office: OfficeLike = {
+      HostType: { Excel: 'Excel' },
+      context: {
+        officeTheme: {
+          bodyBackgroundColor: '#1F1F1F',
+          isDarkTheme: true,
+        },
+      },
+      onReady: vi.fn().mockResolvedValue({ host: 'Word', platform: 'PC' }),
+    };
+
+    await bootstrapTimeline({ container: root, office });
+
+    expect(office.onReady).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole('heading', { name: 'Parametric Timeline' })).toBeInTheDocument();
+    expect(root.querySelector('.timeline-pane')).toHaveAttribute('data-theme', 'light');
+  });
+
   it('renders directly when called by the dev server fallback', async () => {
     const root = createTaskPaneRoot();
 

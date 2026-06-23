@@ -25,10 +25,19 @@ export default defineConfig(async ({ command }): Promise<UserConfig> => {
   };
 
   if (command === 'serve') {
-    config.server = {
-      ...config.server,
-      https: await getHttpsServerOptions(),
-    };
+    // Excel sideload needs HTTPS against the trusted Office localhost cert, but
+    // plain-browser dev does not. When the dev certs are missing, fall back to
+    // HTTP instead of hard-failing so `bun run dev` still serves the pane.
+    try {
+      config.server = {
+        ...config.server,
+        https: await getHttpsServerOptions(),
+      };
+    } catch {
+      console.warn(
+        '[vite] Office dev certs not found — serving over HTTP. Run `bun run --filter @timeline/addin certs` for the trusted HTTPS server required by Excel sideload.',
+      );
+    }
   }
 
   return config;

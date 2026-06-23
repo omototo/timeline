@@ -7,6 +7,22 @@ A Bun monorepo for an Excel Office Add-in that reconstructs past sheet state fro
 
 **Open-core, Apache-2.0.** The engine and core add-in are free and open source with no licensing gate (ADR-0012). Distributed via both Microsoft AppSource (official binary) and self-host / sideload — see `CONTRIBUTING.md`.
 
+## Quick start
+
+```sh
+git clone https://github.com/omototo/timeline.git
+cd timeline
+bun install
+bun run dev      # serves the pane at localhost:9588 against sample data
+bun run verify   # full gate (check:text, typecheck, lint, format, tests, build)
+```
+
+`bun run dev` serves the task pane against the fake timeline data source, so you
+can develop in a plain browser. It uses HTTPS when the Office dev certs are
+installed and falls back to plain HTTP otherwise — no certs required for
+browser-only work. Run `bun run verify` before opening any PR. To load the
+add-in inside Excel, see [Run It In Excel](#run-it-in-excel).
+
 ## Layout
 
 | Package                                | Purpose                              | Purity                                                      |
@@ -36,8 +52,10 @@ ADR-0001 requires the engine to stay free of Office.js and the DOM. This is enfo
 ## Run It In Excel
 
 The task pane runs against the fake timeline data source for local demos. The
-manifest targets `https://localhost:9588/index.html`, so the dev server must use
-the trusted Office localhost certificate.
+manifest targets `https://localhost:9588/index.html`, so Excel sideload requires
+the dev server to use the **trusted Office localhost certificate**. Browser-only
+development needs no certs (see [Quick start](#quick-start)); Excel sideload
+does.
 
 1. Install and trust the Office dev certificate:
 
@@ -45,14 +63,19 @@ the trusted Office localhost certificate.
    bun run --filter @timeline/addin certs
    ```
 
+   The OS will prompt you to trust the certificate — **accept the prompt**. This
+   is required so Excel can load the HTTPS dev server. Without the trusted cert,
+   `bun run dev` still works in a plain browser (over HTTP), but Excel will
+   refuse to load the add-in.
+
 2. Sideload in Excel desktop:
 
    ```sh
    bun run --filter @timeline/addin sideload
    ```
 
-   This starts the HTTPS Vite dev server on port 9588 and loads the manifest
-   into Excel desktop. Use `bun run --filter @timeline/addin start` when you
+   This starts the HTTPS Vite dev server on port 9588 and opens Excel desktop
+   with the add-in loaded. Use `bun run --filter @timeline/addin start` when you
    want the Office debugging session, and `bun run --filter @timeline/addin stop`
    to remove the sideloaded add-in registration when finished.
 
