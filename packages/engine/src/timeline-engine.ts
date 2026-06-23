@@ -430,12 +430,73 @@ export class TimelineEngineImpl implements TimelineEngine {
       : { branchId: this.#head.branchId, mode: this.#head.mode };
   }
 
-  timeline(_opts?: TimelineQuery): TimelineView {
-    throw new Error('TimelineEngineImpl.timeline is not implemented in Wave 1.');
+  /**
+   * The histogram model (Wave 5, ADR-0004): the resident branch graph plus the
+   * ordered Steps of each branch, each carrying a per-Step `magnitude` for the
+   * histogram bars. Pure.
+   *
+   * **Magnitude** is the bar height the timeline UI draws: how much a Step
+   * changed. It is computed by {@link stepMagnitude} per Delta kind — a value
+   * edit's magnitude is its cell count; a structural/worksheet op is a small
+   * fixed weight (a coordinate transform or tab op touches no cell content); a
+   * reconciliation's magnitude is its total per-sheet cell count. The shapes are
+   * additive bars, so a 50k-cell paste towers over single-cell edits.
+   *
+   * **Branch splits**: `view.branches` is the fork graph (each `BranchMeta`
+   * carries `parentBranchId` + `forkedAt`), so the renderer can draw where a
+   * branch split off its parent. The implicit `main` root is included once any
+   * branch metadata exists.
+   *
+   * `opts` (optional) filters: `branchId` scopes to one branch's Steps; an
+   * inclusive `[fromStepIndex, toStepIndex]` window clips the Steps. Branches in
+   * `view.branches` are always the full resident graph (the renderer needs the
+   * parents to position a scoped branch); only the `steps` list is filtered.
+   */
+  timeline(opts?: TimelineQuery): TimelineView {
+    const branches = this.branches();
+
+    const branchIds = opts?.branchId !== undefined ? [opts.branchId] : [...this.#log.keys()].sort();
+
+    const steps: TimelineView['steps'] = [];
+    for (const branchId of branchIds) {
+      for (const step of this.#log.get(branchId) ?? []) {
+        if (opts?.fromStepIndex !== undefined && step.stepIndex < opts.fromStepIndex) continue;
+        if (opts?.toStepIndex !== undefined && step.stepIndex > opts.toStepIndex) continue;
+        steps.push({
+          ref: { branchId, stepIndex: step.stepIndex },
+          kind: step.delta.kind,
+          magnitude: stepMagnitude(step.delta),
+        });
+      }
+    }
+
+    return { branches, steps };
   }
 
-  inspectStep(_ref: StepRef): StepDetail {
-    throw new Error('TimelineEngineImpl.inspectStep is not implemented in Wave 1.');
+  /**
+   * Formula-text metadata for one Step (Wave 5): for every cell the Step
+   * touched, its `beforeFormula` and `afterFormula`. Drives the Preview
+   * inspect/diff UI (ADR-0008) — the user scrubbing to a Step sees what formulas
+   * it introduced/changed. Pure.
+   *
+   * Each Delta kind maps to per-cell formula metadata:
+   * - **value**: each `{ addr, before.formula, after.formula }` directly.
+   * - **reconciliation**: the union of every per-sheet cell's before/after
+   *   formula (drift repair is a value change — ADR-0006).
+   * - **structural / worksheet**: no cell formulas change (a coordinate transform
+   *   or tab op never rewrites formula text — ADR-0003), so `cells` is empty.
+   *
+   * Throws a `RangeError` if `ref` does not name a recorded Step — the shell
+   * should only inspect Steps the timeline reported.
+   */
+  inspectStep(ref: StepRef): StepDetail {
+    const step = (this.#log.get(ref.branchId) ?? []).find((s) => s.stepIndex === ref.stepIndex);
+    if (step === undefined) {
+      throw new RangeError(
+        `inspectStep: no Step at ${ref.branchId}#${String(ref.stepIndex)} (not a recorded Step).`,
+      );
+    }
+    return { ref, kind: step.delta.kind, cells: stepFormulaCells(step.delta) };
   }
 
   // -------------------------------------------------------------------------
@@ -1000,4 +1061,57 @@ function byRowMajor(a: string, b: string): number {
   const [ar, ac] = a.split(',').map(Number) as [number, number];
   const [br, bc] = b.split(',').map(Number) as [number, number];
   return ar - br !== 0 ? ar - br : ac - bc;
+}
+
+// ---------------------------------------------------------------------------
+// Module-level helpers (Wave 5 — timeline + inspect)
+// ---------------------------------------------------------------------------
+
+/**
+ * The histogram bar magnitude for a {@link Delta} — "how much did this Step
+ * change". A `value` Step's magnitude is its changed-cell count (a 50k-cell
+ * paste towers over a single-cell edit). A `reconciliation` Step's magnitude is
+ * the total per-sheet cell count it repaired. A `structural`/`worksheet` Step is
+ * a coordinate/tab transform touching no cell content, so it gets a small fixed
+ * weight (1) — visible on the timeline but never a tall bar.
+ */
+export function stepMagnitude(delta: Delta): number {
+  switch (delta.kind) {
+    case 'value':
+      return delta.cells.length;
+    case 'reconciliation':
+      return delta.perSheet.reduce((sum, sheet) => sum + sheet.cells.length, 0);
+    case 'structural':
+    case 'worksheet':
+      return 1;
+  }
+}
+
+/**
+ * Per-cell before/after formula metadata for a {@link Delta} (the body of
+ * {@link StepDetail.cells}). Only Deltas that change cell content carry formula
+ * metadata: `value` (directly) and `reconciliation` (the union of its per-sheet
+ * cells). `structural`/`worksheet` Steps never rewrite formula text (ADR-0003),
+ * so they yield an empty list.
+ */
+export function stepFormulaCells(delta: Delta): StepDetail['cells'] {
+  switch (delta.kind) {
+    case 'value':
+      return delta.cells.map((c) => ({
+        addr: c.addr,
+        beforeFormula: c.before.formula,
+        afterFormula: c.after.formula,
+      }));
+    case 'reconciliation':
+      return delta.perSheet.flatMap((sheet) =>
+        sheet.cells.map((c) => ({
+          addr: c.addr,
+          beforeFormula: c.before.formula,
+          afterFormula: c.after.formula,
+        })),
+      );
+    case 'structural':
+    case 'worksheet':
+      return [];
+  }
 }

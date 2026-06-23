@@ -223,17 +223,18 @@ describe('TimelineEngineImpl.ingest — refusals & diagnostics', () => {
   });
 });
 
-describe('TimelineEngineImpl — still-out-of-scope query methods throw', () => {
+describe('TimelineEngineImpl — query methods (Wave 5 — implemented)', () => {
   let engine: TimelineEngineImpl;
 
   beforeEach(() => {
     engine = new TimelineEngineImpl();
   });
 
-  it('timeline / inspectStep are not implemented yet', () => {
+  it('timeline / inspectStep are implemented (Wave 5 — no longer throw)', () => {
+    engine.ingest(valueObs('Sheet1', [cellRect(0, 0)], [[state({ value: 'x' })]]));
     const ref = { branchId: 'main', stepIndex: 0 };
-    expect(() => engine.timeline()).toThrow();
-    expect(() => engine.inspectStep(ref)).toThrow();
+    expect(() => engine.timeline()).not.toThrow();
+    expect(() => engine.inspectStep(ref)).not.toThrow();
   });
 
   it('lifecycle / branch / switch are implemented (Wave 4 — no longer throw)', () => {

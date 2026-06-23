@@ -236,9 +236,9 @@ export interface PersistedHead {
 }
 
 /**
- * TODO(spec): `TimelineQuery` filters/paginates the histogram model. The spec
- * references it but leaves the shape open. Minimal-but-sensible: optional
- * branch scope and an inclusive step window.
+ * `TimelineQuery` filters the histogram model (Wave 5 — pinned). Optional branch
+ * scope plus an inclusive `[fromStepIndex, toStepIndex]` step window. Filters the
+ * returned Steps only; the branch graph is always the full resident fork graph.
  */
 export interface TimelineQuery {
   branchId?: BranchId;
@@ -247,24 +247,27 @@ export interface TimelineQuery {
 }
 
 /**
- * TODO(spec): `TimelineView` is the histogram model returned by `timeline()`
- * (steps, bar magnitudes, branch splits). The spec references it but leaves the
- * shape open. Minimal-but-sensible version below.
+ * `TimelineView` — the histogram model returned by `timeline()` (Wave 5 —
+ * pinned). `branches` is the full resident fork graph (parent + forkedAt, tab
+ * order) so the renderer can draw branch splits; `steps` are the ordered Steps,
+ * each with a per-Step `magnitude` (the histogram bar height — see
+ * `stepMagnitude`).
  */
 export interface TimelineView {
   branches: BranchMeta[];
   steps: {
     ref: StepRef;
     kind: Delta['kind'];
-    /** Bar magnitude for the histogram (e.g. cells touched). */
+    /** Bar magnitude for the histogram: value=cell count; structural/worksheet=1. */
     magnitude: number;
   }[];
 }
 
 /**
- * TODO(spec): `StepDetail` is the formula-text metadata returned by
- * `inspectStep()` for Preview. The spec references it but leaves the shape open.
- * Minimal-but-sensible version below.
+ * `StepDetail` — the formula-text metadata returned by `inspectStep()` for the
+ * Preview inspect/diff UI (Wave 5 — pinned). For every cell the Step touched,
+ * its before/after formula text. `structural`/`worksheet` Steps never rewrite
+ * formula text (ADR-0003), so their `cells` list is empty.
  */
 export interface StepDetail {
   ref: StepRef;

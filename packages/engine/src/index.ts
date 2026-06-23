@@ -58,6 +58,8 @@ export type { TimelineEngine } from './engine.ts';
 // additive diagnostic and construction-option shapes.
 export {
   TimelineEngineImpl,
+  stepMagnitude,
+  stepFormulaCells,
   type IngestDiagnostic,
   type TimelineEngineOptions,
 } from './timeline-engine.ts';

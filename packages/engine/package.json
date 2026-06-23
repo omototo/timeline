@@ -13,6 +13,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "bench": "bun bench/index.ts"
   }
 }

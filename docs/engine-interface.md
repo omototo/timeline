@@ -241,4 +241,34 @@ interface SheetDiff {                                     // one sheet's reconci
 
 Drift reconciliation populates `SheetDiff.cells` (value changes only — content, not the untracked coordinate moves that produced it); `SheetDiff.structural` is reserved for future structural-drift capture and is currently always empty.
 
+### Queries & benchmark (Wave 5 — ADR-0004, ADR-0013)
+
+The query surface (`timeline`/`inspectStep`) is implemented behind the frozen interface; signatures unchanged. The `TimelineQuery`/`TimelineView`/`StepDetail` shapes — previously `TODO(spec)` — are now **pinned** (the bodies already in `types.ts` match):
+
+```ts
+interface TimelineQuery { branchId?: BranchId; fromStepIndex?: number; toStepIndex?: number; }
+interface TimelineView {
+  branches: BranchMeta[];                                  // the full resident fork graph (parent + forkedAt), tab order
+  steps: { ref: StepRef; kind: Delta['kind']; magnitude: number }[];
+}
+interface StepDetail {
+  ref: StepRef; kind: Delta['kind'];
+  cells: { addr: Rect; beforeFormula: string | null; afterFormula: string | null }[];
+}
+```
+
+**`timeline(opts?)`** is the histogram model. `view.branches` is always the **full** resident fork graph (the renderer needs the parents to position a scoped branch); `view.steps` are the ordered Steps, each carrying a **`magnitude`** — the histogram bar height — computed per Delta kind by the exported pure helper **`stepMagnitude(delta)`**:
+
+- **value** → its changed-cell count (a 50k-cell paste towers over single-cell edits).
+- **reconciliation** → its total per-sheet repaired-cell count.
+- **structural / worksheet** → a small fixed weight (**1**): a coordinate transform or tab op touches no cell content, so it is visible on the timeline but never a tall bar.
+
+`opts` filters the **Steps only**: `branchId` scopes to one branch; an inclusive `[fromStepIndex, toStepIndex]` window clips them. Default scope is every branch's Steps, branch-id ascending then stepIndex ascending.
+
+**`inspectStep(ref)`** returns per-cell formula-text metadata (`beforeFormula`/`afterFormula`) for the Preview inspect/diff UI (ADR-0008), via the exported pure helper **`stepFormulaCells(delta)`**: `value` cells map directly; `reconciliation` flattens its per-sheet cells; `structural`/`worksheet` Steps never rewrite formula text (ADR-0003) so they yield an empty list. A `ref` that does not name a recorded Step throws a `RangeError`.
+
+Both `stepMagnitude` and `stepFormulaCells` are exported from `@timeline/engine` (pure, total over every `Delta['kind']`).
+
+**Headless benchmark (`packages/engine/bench`, `bun run bench`)** — the engine-compute half of ADR-0004. A `ReplayChangeSource` emits synthetic Observations (50k- and 100k-cell pastes + N single-cell edits) → `TimelineEngineImpl` → a fake `RecordingRenderTarget` records the `ReconcileOp`s → `InMemoryStore` drains the `PersistOp`s. It measures ingest latency for the big pastes, replay latency reconstructing the tip after 100/1k/10k Steps, and keyframe serialize+gzip via the Node global `CompressionStream`, then prints a timing table. The **on-host half** (stages 1 + 5 — `getValues` I/O floor + end-to-end paste→Step committed against a live Excel host) needs real Excel and is out of scope here. The bench compiles under a sibling `tsconfig.bench.json` (adds the DOM lib for `CompressionStream`/`Blob`/`Response`); the engine's `src/**` stays DOM-free, preserving engine purity.
+
 
