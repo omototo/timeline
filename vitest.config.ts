@@ -25,8 +25,6 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'html'],
       include: ['packages/*/src/**/*.{ts,tsx}'],
-      // The DOM bootstrap (createRoot wrapper) has no logic to test; exclude it.
-      exclude: ['packages/addin/src/main.tsx'],
       thresholds: {
         statements: 80,
         branches: 80,

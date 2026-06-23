@@ -4,7 +4,7 @@
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
   xsi:type="TaskPaneApp">
-  <Id>00000000-0000-0000-0000-000000000000</Id>
+  <Id>0f53d6be-0c13-4f9a-9ef6-8f52a174df8d</Id>
   <Version>0.0.0.0</Version>
   <ProviderName>Timeline</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>

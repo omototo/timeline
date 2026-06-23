@@ -12,6 +12,11 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "certs": "office-addin-dev-certs install --days 365",
+    "certs:verify": "office-addin-dev-certs verify",
+    "sideload": "office-addin-debugging start manifest.xml desktop --app excel --no-debug --dev-server \"bun run dev\" --dev-server-port 9588",
+    "start": "office-addin-debugging start manifest.xml desktop --app excel --dev-server \"bun run dev\" --dev-server-port 9588",
+    "stop": "office-addin-debugging stop manifest.xml desktop",
     "typecheck": "tsc -b"
   },
   "dependencies": {
@@ -26,6 +31,8 @@
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.6.0",
-    "fake-indexeddb": "^6.2.5"
+    "fake-indexeddb": "^6.2.5",
+    "office-addin-debugging": "^6.1.1",
+    "office-addin-dev-certs": "^2.0.9"
   }
 }
