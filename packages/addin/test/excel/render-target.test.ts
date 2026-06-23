@@ -187,6 +187,19 @@ describe('PreviewSheetRenderTarget', () => {
     expect(workbook.activeSheetId).toBe('Preview');
   });
 
+  it('re-creating over a stale preview sheet replaces it (idempotent, no collision)', async () => {
+    const target = new PreviewSheetRenderTarget({ run });
+    const plan: ReconcilePlan = {
+      target: 'previewSheet',
+      ops: [{ op: 'createPreviewSheet', previewSheetId: 'Preview' }],
+    };
+    await target.reconcile(plan);
+    // A second create (as after a branch left the surface behind) must not throw.
+    await target.reconcile(plan);
+    expect(workbook.sheets.filter((s) => s.name === 'Preview')).toHaveLength(1);
+    expect(requireSheet(workbook, 'Preview').visibility).toBe('VeryHidden');
+  });
+
   it('tolerates deleting an already-absent preview sheet', async () => {
     const target = new PreviewSheetRenderTarget({ run });
     await target.reconcile({
