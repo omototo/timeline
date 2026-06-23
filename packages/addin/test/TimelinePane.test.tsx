@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { TimelinePane } from '../src/ui/TimelinePane.tsx';
 import { TimelinePaneContainer } from '../src/ui/TimelinePaneContainer.tsx';
+import { compareBranches } from '../src/ui/branch-compare.ts';
 import { FakeTimelineDataSource } from '../src/ui/data-source.ts';
 import { sampleTimeline } from '../src/ui/sample-timeline.ts';
 import type { TimelineCommand, TimelineView } from '../src/ui/contract.ts';
@@ -13,6 +14,16 @@ function renderPane(view: TimelineView = sampleTimeline) {
 }
 
 describe('TimelinePane', () => {
+  it('computes branch compare divergence from TimelineView', () => {
+    const comparison = compareBranches(sampleTimeline, 'main', 'branch-b');
+
+    expect(comparison?.fork).toEqual({ branchId: 'main', stepIndex: 14 });
+    expect(comparison?.firstDifferentStepIndex).toBe(0);
+    expect(comparison?.leftStats.stepCount).toBe(72);
+    expect(comparison?.rightStats.stepCount).toBe(28);
+    expect(comparison?.rightStats.totalMagnitude).toBeGreaterThan(0);
+  });
+
   it('maps Step magnitude to histogram bar height', () => {
     renderPane();
 
@@ -47,6 +58,26 @@ describe('TimelinePane', () => {
     } satisfies TimelineCommand);
   });
 
+  it('moves the playhead with keyboard arrows on Step bars', () => {
+    const dispatch = renderPane();
+
+    fireEvent.keyDown(screen.getByTestId('timeline-bar-main-1'), { key: 'ArrowRight' });
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'goto',
+      ref: { branchId: 'main', stepIndex: 2 },
+    } satisfies TimelineCommand);
+    expect(screen.getByRole('tooltip')).toHaveTextContent('main Step 2');
+  });
+
+  it('shows a tooltip when a bar receives keyboard focus', () => {
+    renderPane();
+
+    fireEvent.focus(screen.getByTestId('timeline-bar-main-1'));
+
+    expect(screen.getByRole('tooltip')).toHaveTextContent('magnitude 1,000');
+  });
+
   it('shows the selected Step in the inspector', () => {
     renderPane();
 
@@ -55,6 +86,15 @@ describe('TimelinePane', () => {
     expect(screen.getByRole('heading', { name: 'Step 1' })).toBeInTheDocument();
     expect(screen.getByText('paste 1,000 rows')).toBeInTheDocument();
     expect(screen.getByText('Pending inspectStep')).toBeInTheDocument();
+  });
+
+  it('renders branch compare details and future diff slot', () => {
+    renderPane();
+
+    expect(screen.getByLabelText('Branch compare')).toHaveTextContent('main Step 14');
+    expect(
+      screen.getByText('Cell-level diff pending engine state integration.'),
+    ).toBeInTheDocument();
   });
 
   it('emits branch from the previewed Step', () => {
@@ -122,5 +162,17 @@ describe('TimelinePane', () => {
 
     expect(screen.getByText('Preview')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Return to Present' })).toBeInTheDocument();
+  });
+
+  it('renders in a narrow 320px task-pane container', () => {
+    const { container } = render(
+      <div style={{ width: '320px' }}>
+        <TimelinePane view={sampleTimeline} dispatch={vi.fn()} />
+      </div>,
+    );
+
+    expect(screen.getByRole('heading', { name: 'Parametric Timeline' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Branch compare')).toBeInTheDocument();
+    expect(container.querySelector('.timeline-pane__histogram')).toBeInTheDocument();
   });
 });

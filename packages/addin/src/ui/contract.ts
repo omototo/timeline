@@ -8,6 +8,7 @@
 
 export type SheetId = string;
 export type BranchId = string;
+export type TimelineTheme = 'light' | 'dark';
 
 export type StepKind = 'value' | 'structural' | 'worksheet' | 'reconciliation';
 
@@ -58,4 +59,5 @@ export type TimelineCommand =
 export interface TimelinePaneProps {
   view: TimelineView;
   dispatch: (cmd: TimelineCommand) => void;
+  theme?: TimelineTheme;
 }
