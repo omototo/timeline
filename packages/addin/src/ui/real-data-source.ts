@@ -62,6 +62,10 @@ export class RealTimelineDataSource implements TimelineDataSource {
   readonly #sheets: SheetId[];
   readonly #onError: (error: unknown) => void;
   readonly #listeners = new Set<() => void>();
+  // `useSyncExternalStore` requires getView() to be referentially stable between
+  // changes — recomputing a fresh view every call drives an infinite render
+  // loop. Cache the snapshot and invalidate it only when state actually changes.
+  #view: TimelineView | null = null;
 
   constructor(options: RealTimelineDataSourceOptions) {
     this.#engine = options.engine;
@@ -95,7 +99,8 @@ export class RealTimelineDataSource implements TimelineDataSource {
   }
 
   getView(): TimelineView {
-    return translateView(this.#engine.timeline(), this.#engine.head(), this.#sheets);
+    this.#view ??= translateView(this.#engine.timeline(), this.#engine.head(), this.#sheets);
+    return this.#view;
   }
 
   subscribe(listener: () => void): () => void {
@@ -149,6 +154,8 @@ export class RealTimelineDataSource implements TimelineDataSource {
   }
 
   #emit(): void {
+    // Invalidate the cached snapshot first so the next getView() recomputes.
+    this.#view = null;
     for (const listener of this.#listeners) {
       listener();
     }

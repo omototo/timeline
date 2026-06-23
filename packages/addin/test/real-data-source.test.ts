@@ -100,6 +100,17 @@ describe('RealTimelineDataSource', () => {
     });
   });
 
+  it('returns a referentially stable view between changes (no useSyncExternalStore loop)', () => {
+    // Same object identity when nothing changed...
+    expect(h.source.getView()).toBe(h.source.getView());
+    const before = h.source.getView();
+    // ...a fresh identity after a real change (so React re-renders exactly once).
+    h.changeSource.emit(edit(5));
+    const after = h.source.getView();
+    expect(after).not.toBe(before);
+    expect(h.source.getView()).toBe(after);
+  });
+
   it('routes rename/delete to a no-op (no engine op yet)', () => {
     h.changeSource.emit(edit(1));
     const before = h.source.getView();

@@ -274,6 +274,23 @@ export function TimelinePane({ view, dispatch, theme = 'light' }: TimelinePanePr
           cursor: 'crosshair',
         }}
       >
+        {branch.steps.length === 0 ? (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              textAlign: 'center',
+              padding: '0 16px',
+              color: t.muted ?? '#6b7280',
+              fontSize: 12,
+            }}
+          >
+            No tracked changes yet — edit a cell and it will appear here.
+          </div>
+        ) : null}
         {visible.map((s) => (
           <button
             key={s.index}

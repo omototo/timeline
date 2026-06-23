@@ -149,6 +149,17 @@ describe('TimelinePane', () => {
     expect(screen.getByLabelText(/Histogram of/)).toBeTruthy();
   });
 
+  it('shows an empty state when the active branch has no Steps yet', () => {
+    const empty = viewWith({
+      branches: [{ id: 'main', name: 'main', provisional: false, steps: [] }],
+      head: { branchId: 'main', mode: 'present' },
+      sheets: [],
+    });
+    render(<TimelinePane view={empty} dispatch={vi.fn()} />);
+    expect(screen.getByText(/No tracked changes yet/)).toBeTruthy();
+    expect(screen.queryAllByRole('button', { name: /^Step \d+:/ })).toHaveLength(0);
+  });
+
   it('renders in a narrow 320px task pane (dark theme)', () => {
     const host = document.createElement('div');
     host.style.width = '320px';
