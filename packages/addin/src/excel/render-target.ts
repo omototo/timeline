@@ -117,10 +117,12 @@ abstract class BaseRenderTarget implements RenderTarget {
   #deletePreviewSheet(previewSheetId: string): Promise<void> {
     return this.run(async (ctx) => {
       const sheet = ctx.workbook.worksheets.getItemOrNullObject(toExcelSheetName(previewSheetId));
+      // `isNullObject` is only populated after a sync — read it only then.
+      await ctx.sync();
       if (sheet.isNullObject !== true) {
         sheet.delete();
+        await ctx.sync();
       }
-      await ctx.sync();
     });
   }
 
@@ -165,7 +167,10 @@ abstract class BaseRenderTarget implements RenderTarget {
     let rowOffset = 0;
     for (const rect of area) {
       const address = rectToAddress(rect);
-      this.expectedWrites?.register(sheet.id, address);
+      // Register the engine sheet id (a real sheet's id is its worksheet GUID,
+      // matching the change event's worksheetId). Reading `sheet.id` off the
+      // proxy here would need a prior load()+sync() and is unnecessary.
+      this.expectedWrites?.register(sheetId, address);
       const range = sheet.getRange(address);
       const block = sliceSlab(slab, rowOffset, rect);
       if (mode === 'formula') {
@@ -192,7 +197,7 @@ abstract class BaseRenderTarget implements RenderTarget {
   ): RangeLike {
     const sheet = this.resolveSheet(ctx, op.sheetId);
     const address = rectToAddress(op.address);
-    this.expectedWrites?.register(sheet.id, address);
+    this.expectedWrites?.register(op.sheetId, address);
     const range = sheet.getRange(address);
     const inserting =
       op.changeType === 'rowInserted' ||
