@@ -26,6 +26,11 @@
     "test": "vitest run",
     "test:cov": "vitest run --coverage",
     "build": "tsc -b && bun run --filter @timeline/addin build",
+    "dev": "bun run --filter @timeline/addin dev",
+    "certs": "bun run --filter @timeline/addin certs",
+    "sideload": "bun run --filter @timeline/addin sideload",
+    "start": "bun run --filter @timeline/addin start",
+    "stop": "bun run --filter @timeline/addin stop",
     "check:text": "bun scripts/check-text.ts",
     "verify": "bun run check:text && bun run typecheck && bun run lint && bun run format:check && bun run test:cov && bun run build",
     "prepare": "husky"
