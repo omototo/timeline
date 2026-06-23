@@ -21,19 +21,16 @@ jobs:
 
       - name: Run Claude Code Review
         uses: anthropics/claude-code-action@v1
-        env:
-          GH_TOKEN: ${{ github.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # Direct prompt (no /code-review plugin — it errors on our tsc -b project references).
-          claude_args: '--model opus --allowedTools "Bash(gh:*)"'
+          claude_args: '--model opus'
+          # The action posts the review natively as a single sticky comment.
+          # No /code-review plugin (errors on our tsc -b refs) and no tool allowlist
+          # (an allowlist blocks the built-in commenting).
+          use_sticky_comment: true
+          track_progress: true
           prompt: |
-            Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
-
-            1. Run `gh pr diff ${{ github.event.pull_request.number }}` to read the changes.
-            2. Review for correctness and bugs, the engine-purity rule (no Office.js / DOM / React
-               under `packages/engine`), and the base rules in `CONTRIBUTING.md`.
-            3. Post your review as ONE concise PR comment by running:
-               `gh pr comment ${{ github.event.pull_request.number }} --body "..."`
-               Lead with a one-line verdict, then bullet any issues (or confirm it looks good).
-               Always post a comment.
+            Review this pull request. Focus on correctness and bugs, the engine-purity
+            rule (no Office.js / DOM / React under `packages/engine`), and the base rules
+            in `CONTRIBUTING.md`. Lead with a one-line verdict, then bullet any issues
+            (or confirm it looks good). Be concise.
