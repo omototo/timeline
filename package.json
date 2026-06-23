@@ -26,7 +26,8 @@
     "test": "vitest run",
     "test:cov": "vitest run --coverage",
     "build": "tsc -b && bun run --filter @timeline/addin build",
-    "verify": "bun run typecheck && bun run lint && bun run format:check && bun run test:cov && bun run build",
+    "check:text": "bun scripts/check-text.ts",
+    "verify": "bun run check:text && bun run typecheck && bun run lint && bun run format:check && bun run test:cov && bun run build",
     "prepare": "husky"
   },
   "devDependencies": {

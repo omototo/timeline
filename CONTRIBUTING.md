@@ -110,9 +110,10 @@ These exist because skipping them has bitten us before — a branch that was
 "green locally" but red in CI, and a PR that merged red and broke `main`.
 
 1. **Run `bun run verify` before every push and before opening or updating a
-   PR.** It runs the **exact** CI gate in one command — `typecheck → lint →
-format:check → test:cov → build`. If `verify` is green, CI will be green.
-   (A partial gate that skips `format:check` or `build` is what reddened `main`.)
+   PR.** It runs the **exact** CI gate in one command —
+   `check:text → typecheck → lint → format:check → test:cov → build`. CI runs
+   this same `bun run verify`, so "green locally" cannot mean "red in CI." A
+   partial gate (skipping `format:check`/`build`) is what reddened `main`.
 2. **Never merge a PR with a failing or pending check** — not even with admin
    rights. Red CI on `main` blocks everyone; wait for green.
 3. **Update a PR branch one way only** — either GitHub's "Update branch" button
@@ -126,6 +127,19 @@ format:check → test:cov → build`. If `verify` is green, CI will be green.
    after merge (`git branch -D <branch>`); don't leave stale branches/worktrees.
 6. **No AI co-authorship or attribution** (Claude or Codex) in commit messages
    or PR titles/bodies.
+7. **Work in your own checkout, and commit often.** Each contributor/agent works
+   on its own branch in its own clone or `git worktree` — never edit a shared
+   working directory in place, and never leave large uncommitted work sitting on
+   `main`. (Two agents editing one working tree collided and nearly lost work.)
+8. **Source files are text — no binary/control bytes.** Never commit a NUL or
+   other control byte into a source file; it makes git treat the file as binary
+   and can silently corrupt content while still passing typecheck/lint/format.
+   `bun run verify` runs `check:text` to catch this; if you paste content, watch
+   for stray control characters.
+9. **Workflow changes are special.** Changes under `.github/workflows/` go in
+   their own PR (they affect CI and permissions), the auto-review bot skips that
+   PR by design (it won't run on PRs that edit workflows), and a workflow change
+   only affects a given PR once that PR's branch contains it.
 
 ## Pull requests
 
