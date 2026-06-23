@@ -34,7 +34,7 @@ export interface ChangedCell {
 }
 
 /** The lossless state of an empty (never-written / cleared) cell. */
-const EMPTY_CELL: CellState = {
+export const EMPTY_CELL: CellState = {
   value: '',
   formula: null,
   valueType: 'empty',
@@ -57,6 +57,20 @@ export interface SheetMeta {
 /** Coordinate key for the per-sheet cell map: `"row,col"`. */
 type CellKey = string;
 
+/**
+ * A serialized, structurally-cloneable snapshot of the whole Shadow State
+ * (every sheet's cells + the sheet-metadata map). This is the payload a
+ * keyframe persists (ADR-0007) and the seed reconstruction replays forward
+ * from. Plain data only — no `Map`s — so it round-trips through the store and
+ * `structuredClone` losslessly.
+ */
+export interface ShadowSnapshot {
+  /** Per-sheet sparse cell entries: `[ "row,col", CellState ]` pairs. */
+  sheets: { sheetId: SheetId; cells: [CellKey, CellState][] }[];
+  /** The sheet-metadata map (name + tab order) as a flat list. */
+  sheetMeta: SheetMeta[];
+}
+
 function cellKey(row: number, col: number): CellKey {
   return `${String(row)},${String(col)}`;
 }
@@ -67,7 +81,7 @@ function cellRect(row: number, col: number): Rect {
 }
 
 /** Two {@link CellState}s are equal iff every lossless field matches. */
-function cellStateEquals(a: CellState, b: CellState): boolean {
+export function cellStateEquals(a: CellState, b: CellState): boolean {
   return (
     Object.is(a.value, b.value) &&
     a.formula === b.formula &&
@@ -325,6 +339,75 @@ export class ShadowState {
   /** Number of non-empty cells held for a sheet (0 if the sheet is unknown). */
   cellCount(sheetId: SheetId): number {
     return this.#sheets.get(sheetId)?.size ?? 0;
+  }
+
+  /**
+   * Every sheet id that currently holds at least one non-empty cell. Used by
+   * the minimal-diff projector to enumerate the union of populated sheets
+   * across two states. (Distinct from {@link ShadowState.sheets}, which lists
+   * the sheet-metadata map in tab order.)
+   */
+  populatedSheetIds(): SheetId[] {
+    return [...this.#sheets.keys()];
+  }
+
+  /**
+   * Enumerate the non-empty cells of a sheet as `(row, col, state)` triples
+   * (defensive copies). Order is unspecified — callers that need determinism
+   * sort. Used by the minimal-diff projector to compare two states cell-wise.
+   */
+  cells(sheetId: SheetId): { row: number; col: number; state: CellState }[] {
+    const sheet = this.#sheets.get(sheetId);
+    if (sheet === undefined) return [];
+    const out: { row: number; col: number; state: CellState }[] = [];
+    for (const [key, st] of sheet) {
+      const { row, col } = parseCellKey(key);
+      out.push({ row, col, state: { ...st } });
+    }
+    return out;
+  }
+
+  /**
+   * Serialize the entire mirror into a plain {@link ShadowSnapshot}.
+   *
+   * Used to materialize a keyframe payload (ADR-0007): the engine emits a
+   * `writeKeyframe` PersistOp carrying this snapshot, and reconstruction seeds a
+   * fresh {@link ShadowState} from it via {@link ShadowState.fromSnapshot}
+   * before replaying deltas forward. Deep-copies every {@link CellState} so the
+   * snapshot can outlive subsequent mutations of the live mirror.
+   */
+  snapshot(): ShadowSnapshot {
+    const sheets: ShadowSnapshot['sheets'] = [];
+    for (const [sheetId, cells] of this.#sheets) {
+      sheets.push({
+        sheetId,
+        cells: [...cells.entries()].map(([key, st]) => [key, { ...st }]),
+      });
+    }
+    return {
+      sheets,
+      sheetMeta: [...this.#sheetMeta.values()].map((m) => ({ ...m })),
+    };
+  }
+
+  /**
+   * Rebuild a {@link ShadowState} from a {@link ShadowSnapshot} (the inverse of
+   * {@link ShadowState.snapshot}). Deep-copies every cell so the new instance
+   * does not alias the snapshot. This is the keyframe-restore seed for
+   * forward-replay reconstruction.
+   */
+  static fromSnapshot(snap: ShadowSnapshot): ShadowState {
+    const state = new ShadowState();
+    for (const sheet of snap.sheets) {
+      const map = state.#sheet(sheet.sheetId);
+      for (const [key, st] of sheet.cells) {
+        map.set(key, { ...st });
+      }
+    }
+    for (const meta of snap.sheetMeta) {
+      state.#sheetMeta.set(meta.sheetId, { ...meta });
+    }
+    return state;
   }
 }
 

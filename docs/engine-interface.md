@@ -154,6 +154,35 @@ These do not appear on the `TimelineEngine` interface; they are concrete-class q
 
 - **Wave 1 (value path):** `readShadow(sheetId, row, col)`, `shadowCellCount(sheetId)`, `tipStepIndex(branchId?)`, `steps(branchId?)`, `lastDiagnostic()`.
 - **Wave 2 (structural + worksheet paths):** `sheetMeta(sheetId)` → `SheetMeta | undefined`, `shadowSheets()` → `SheetMeta[]` (tab order). Both delegate to the Shadow State's sheet map.
+- **Wave 3 (keyframes + reconstruction + navigation):** `keyframeIndices(branchId?)` → `number[]` (stepIndexes at which keyframes were written, ascending) and `readReconstructed(ref, sheetId, row, col)` → `CellState` (forward-replay reconstruct at `ref`, then read one cell). Both are pure inspectors over the resident keyframes + delta log.
+
+### Engine construction options (Wave 3) — adaptive keyframe cadence
+
+`new TimelineEngineImpl(options?)`. The constructor takes an optional `TimelineEngineOptions`; the adaptive keyframe cadence (Q6) is configurable. A keyframe is written after appending a Step when **either** trigger fires:
+
+```ts
+interface TimelineEngineOptions {
+  keyframeStepInterval?: number; // steps since last keyframe (default 100)
+  keyframeByteThreshold?: number; // cumulative delta bytes since last keyframe (default 64 KiB)
+}
+```
+
+Delta byte size is estimated by JSON-encoding length (a deterministic proxy for the store's serialized size). The keyframe payload is a serialized **Shadow State snapshot** (`ShadowSnapshot` — see below) for the branch + stepIndex, emitted as a `writeKeyframe` PersistOp *and* kept resident so reconstruction replays forward from it.
+
+### Pinned: `ShadowSnapshot` (keyframe payload)
+
+The spec's `PersistOp.writeKeyframe` carries a `state: /* serialized */ unknown` but did not pin the serialized shape. Pinned (minimal, structurally-cloneable — no `Map`s):
+
+```ts
+interface ShadowSnapshot {
+  sheets: { sheetId: SheetId; cells: [cellKey: string, state: CellState][] }[];
+  sheetMeta: SheetMeta[];
+}
+```
+
+### Reconstruction + navigation (Wave 3)
+
+Forward-replay-only (Q6): reconstruct at a `StepRef` by seeding from the nearest resident keyframe ≤ `stepIndex` (single branch for now) and applying the deltas in the window `(keyframeStepIndex, stepIndex]` forward — deltas are never inverted. `goto(ref)` flips HEAD → preview, reconstructs the target, and returns a `ReconcilePlan` targeting `previewSheet` that is the **minimal** `value`-mode (Frozen Values, ADR-0008) diff between the engine-tracked currently-projected state and the target; the first entry prefixes `createPreviewSheet` + `activateSheet` (preview sheet id `__preview__`). `returnToPresent()` returns a `realSheet` plan that deletes the Preview Sheet and reactivates the present branch's surface, flipping HEAD back to present; it is a no-op when not in Preview.
 
 ### Pinned placeholder: `SheetMeta`
 

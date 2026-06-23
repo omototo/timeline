@@ -230,7 +230,7 @@ describe('TimelineEngineImpl — Wave-1-out-of-scope methods throw', () => {
     engine = new TimelineEngineImpl();
   });
 
-  it('timeline / inspectStep / lifecycle / navigation are not implemented', () => {
+  it('timeline / inspectStep / lifecycle / branch / switch are not implemented', () => {
     const ref = { branchId: 'main', stepIndex: 0 };
     expect(() => engine.timeline()).toThrow();
     expect(() => engine.inspectStep(ref)).toThrow();
@@ -238,8 +238,6 @@ describe('TimelineEngineImpl — Wave-1-out-of-scope methods throw', () => {
       engine.attach({ workbookGuid: 'g', contentHash: 'h', sheets: [] }, null),
     ).toThrow();
     expect(() => engine.detachToCoauthoring()).toThrow();
-    expect(() => engine.goto(ref)).toThrow();
-    expect(() => engine.returnToPresent()).toThrow();
     expect(() => engine.branch(ref)).toThrow();
     expect(() => engine.switch('main')).toThrow();
   });
