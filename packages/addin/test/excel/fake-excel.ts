@@ -278,6 +278,10 @@ export class FakeWorksheet implements WorksheetLike {
     return new FakeRange(this, startRow, startColumn, rowCount, columnCount);
   }
 
+  activate(): void {
+    this.workbook.activeSheetId = this.id;
+  }
+
   delete(): void {
     this.workbook.removeSheet(this.id);
   }
@@ -337,6 +341,9 @@ function nullSheet(): WorksheetLike & { isNullObject: boolean } {
     getRangeByIndexes: () => {
       throw new Error('null sheet');
     },
+    activate: () => {
+      /* no-op */
+    },
     delete: () => {
       /* no-op */
     },
@@ -350,6 +357,8 @@ export class FakeWorkbook implements WorkbookLike {
   untrackCount = 0;
   readonly structuralOps: StructuralOpRecord[] = [];
   syncCount = 0;
+  /** The id of the worksheet most recently `.activate()`d, or null. */
+  activeSheetId: string | null = null;
 
   constructor() {
     this.worksheets = new FakeWorksheetCollection(this);

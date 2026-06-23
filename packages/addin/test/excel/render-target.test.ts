@@ -175,7 +175,7 @@ describe('PreviewSheetRenderTarget', () => {
     expect(workbook.findSheet('Preview')).toBeUndefined();
   });
 
-  it('activates a sheet by making it visible', async () => {
+  it('activates a sheet by revealing it and switching the view to it', async () => {
     const target = new PreviewSheetRenderTarget({ run });
     const sheet = workbook.addSheet('Preview');
     sheet.visibility = 'VeryHidden';
@@ -184,6 +184,7 @@ describe('PreviewSheetRenderTarget', () => {
       ops: [{ op: 'activateSheet', sheetId: 'Preview' }],
     });
     expect(sheet.visibility).toBe('Visible');
+    expect(workbook.activeSheetId).toBe('Preview');
   });
 
   it('tolerates deleting an already-absent preview sheet', async () => {
@@ -193,5 +194,57 @@ describe('PreviewSheetRenderTarget', () => {
       ops: [{ op: 'deletePreviewSheet', previewSheetId: 'Ghost' }],
     });
     expect(workbook.findSheet('Ghost')).toBeUndefined();
+  });
+
+  it('folds an engine preview id (with ":" and a GUID) into a legal Excel name', async () => {
+    const target = new PreviewSheetRenderTarget({ run });
+    // The engine emits ids like "__preview__::{GUID}" — illegal as a sheet name.
+    const previewId = '__preview__::{6F9619FF-8B86-D011-B42D-00CF4FC964FF}';
+    await target.reconcile({
+      target: 'previewSheet',
+      ops: [{ op: 'createPreviewSheet', previewSheetId: previewId }],
+    });
+    // A sheet was created under a folded, legal name and is resolvable by the id.
+    const created = workbook.sheets[0];
+    expect(created).toBeDefined();
+    expect(created?.name).not.toContain(':');
+    expect((created?.name ?? '').length).toBeLessThanOrEqual(31);
+    // Writing to the same engine id lands on that same sheet.
+    await target.reconcile({
+      target: 'previewSheet',
+      ops: [
+        {
+          op: 'setCells',
+          sheetId: previewId,
+          area: [{ startRow: 0, startCol: 0, rowCount: 1, colCount: 1 }],
+          slab: slab([[42]], [[null]]),
+          mode: 'value',
+        },
+      ],
+    });
+    expect(created?.cellAt(0, 0).value).toBe(42);
+  });
+});
+
+describe('RealSheetRenderTarget — returnToPresent lifecycle', () => {
+  it('deletes the preview surface and reactivates the real sheet', async () => {
+    const fake = createFakeExcel(new FakeWorkbook());
+    const { workbook, run } = fake;
+    workbook.addSheet('Sheet1');
+    const preview = workbook.addSheet('__tl_preview_0a0a0a0a');
+    preview.visibility = 'VeryHidden';
+    const target = new RealSheetRenderTarget({ run });
+
+    // returnToPresent emits a realSheet-targeted plan carrying lifecycle ops.
+    await target.reconcile({
+      target: 'realSheet',
+      ops: [
+        { op: 'deletePreviewSheet', previewSheetId: '__tl_preview_0a0a0a0a' },
+        { op: 'activateSheet', sheetId: 'Sheet1' },
+      ],
+    });
+
+    expect(workbook.findSheet('__tl_preview_0a0a0a0a')).toBeUndefined();
+    expect(workbook.activeSheetId).toBe('Sheet1');
   });
 });

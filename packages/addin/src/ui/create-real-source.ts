@@ -11,6 +11,7 @@ import { OfficeChangeSource } from '../excel/office-change-source.ts';
 import type { ExcelRun, RequestContextLike, WorksheetLike } from '../excel/office-types.ts';
 import { PreviewSheetRenderTarget, RealSheetRenderTarget } from '../excel/render-target.ts';
 import { buildWorkbookSnapshot } from '../excel/workbook-snapshot.ts';
+import { showErrorBanner } from './error-banner.ts';
 import { RealTimelineDataSource } from './real-data-source.ts';
 
 /**
@@ -49,6 +50,11 @@ export async function createRealTimelineDataSource(): Promise<RealTimelineDataSo
     previewTarget,
     changeSource,
     sheets: sheetIds,
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      globalThis.console.error('[timeline] reconcile failed', error);
+      showErrorBanner(message);
+    },
   });
 
   await source.start(engine.attach(snapshot, null));

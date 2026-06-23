@@ -3,12 +3,13 @@
  * vocabulary in `@timeline/engine`. No Office.js type crosses the seam — these
  * helpers are the only place the two namings meet.
  */
-import type {
-  ShiftDirection,
-  StructuralChangeType,
-  ValueType,
-  CellValue,
-  CellSlab,
+import {
+  PREVIEW_SHEET_PREFIX,
+  type ShiftDirection,
+  type StructuralChangeType,
+  type ValueType,
+  type CellValue,
+  type CellSlab,
 } from '@timeline/engine';
 import type {
   ChangeDirectionStateLike,
@@ -17,6 +18,30 @@ import type {
   ExcelInsertShiftDirection,
   RangeLike,
 } from './office-types.ts';
+
+/**
+ * Map an engine sheet id to a valid Excel worksheet NAME.
+ *
+ * Real sheet ids pass through (Office `getItem` accepts an id or a name). Engine
+ * preview-surface ids carry the `__preview__::<id>` prefix, whose `:` is illegal
+ * in an Excel sheet name and whose length (a 38-char worksheet GUID) blows the
+ * 31-char limit — so they fold to a short, legal, deterministic name. The fold
+ * is stable per logical sheet, so create/activate/delete/getItem all resolve the
+ * same Excel sheet.
+ */
+export function toExcelSheetName(sheetId: string): string {
+  if (!sheetId.startsWith(PREVIEW_SHEET_PREFIX)) {
+    return sheetId;
+  }
+  const logical = sheetId.slice(PREVIEW_SHEET_PREFIX.length);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < logical.length; i += 1) {
+    hash ^= logical.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  // `__tl_preview_` + 8 hex = 21 chars: under Excel's 31-char limit, all legal.
+  return `__tl_preview_${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
 
 /** A1-style address parsed into a zero-based rectangle. */
 export interface ParsedRect {
