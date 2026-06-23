@@ -142,4 +142,133 @@ type Delta = ValueDelta | StructuralDelta | WorksheetDelta | ReconciliationDelta
 
 ## Status: interface resolved (Q1–Q6). Next: materialize as compiling TypeScript in `packages/engine` (types + interfaces + `InMemoryStore` + tests), then build the engine algorithm behind it.
 
+---
+
+## Implementation notes (behind the frozen interface)
+
+The frozen `TimelineEngine` surface (Q4) is implemented behind, unchanged. The following are **additive, non-breaking** extensions made while building the engine algorithm.
+
+### Additive query methods on `TimelineEngineImpl`
+
+These do not appear on the `TimelineEngine` interface; they are concrete-class queries the shell/tests use to inspect engine state without exposing internals. All are pure.
+
+- **Wave 1 (value path):** `readShadow(sheetId, row, col)`, `shadowCellCount(sheetId)`, `tipStepIndex(branchId?)`, `steps(branchId?)`, `lastDiagnostic()`.
+- **Wave 2 (structural + worksheet paths):** `sheetMeta(sheetId)` → `SheetMeta | undefined`, `shadowSheets()` → `SheetMeta[]` (tab order). Both delegate to the Shadow State's sheet map.
+- **Wave 3 (keyframes + reconstruction + navigation):** `keyframeIndices(branchId?)` → `number[]` (stepIndexes at which keyframes were written, ascending) and `readReconstructed(ref, sheetId, row, col)` → `CellState` (forward-replay reconstruct at `ref`, then read one cell). Both are pure inspectors over the resident keyframes + delta log.
+- **Wave 4 (branching + lifecycle):** `branches()` → `BranchMeta[]` (the resident branch graph in tab order — fork lineage + provisional flags), `hasBranch(branchId)` → `boolean` (is the branch still resident / not GC'd), and `isSuspended()` → `boolean` (is tracking suspended for co-authoring — ADR-0006). All pure inspectors over the resident branch map + suspension flag.
+
+### Engine construction options (Wave 3) — adaptive keyframe cadence
+
+`new TimelineEngineImpl(options?)`. The constructor takes an optional `TimelineEngineOptions`; the adaptive keyframe cadence (Q6) is configurable. A keyframe is written after appending a Step when **either** trigger fires:
+
+```ts
+interface TimelineEngineOptions {
+  keyframeStepInterval?: number; // steps since last keyframe (default 100)
+  keyframeByteThreshold?: number; // cumulative delta bytes since last keyframe (default 64 KiB)
+}
+```
+
+Delta byte size is estimated by JSON-encoding length (a deterministic proxy for the store's serialized size). The keyframe payload is a serialized **Shadow State snapshot** (`ShadowSnapshot` — see below) for the branch + stepIndex, emitted as a `writeKeyframe` PersistOp *and* kept resident so reconstruction replays forward from it.
+
+### Pinned: `ShadowSnapshot` (keyframe payload)
+
+The spec's `PersistOp.writeKeyframe` carries a `state: /* serialized */ unknown` but did not pin the serialized shape. Pinned (minimal, structurally-cloneable — no `Map`s):
+
+```ts
+interface ShadowSnapshot {
+  sheets: { sheetId: SheetId; cells: [cellKey: string, state: CellState][] }[];
+  sheetMeta: SheetMeta[];
+}
+```
+
+### Reconstruction + navigation (Wave 3)
+
+Forward-replay-only (Q6): reconstruct at a `StepRef` by seeding from the nearest resident keyframe ≤ `stepIndex` (single branch for now) and applying the deltas in the window `(keyframeStepIndex, stepIndex]` forward — deltas are never inverted. `goto(ref)` flips HEAD → preview, reconstructs the target, and returns a `ReconcilePlan` targeting `previewSheet` that is the **minimal** `value`-mode (Frozen Values, ADR-0008) diff between the engine-tracked currently-projected state and the target.
+
+**Multi-sheet Preview surfaces (ADR-0005).** History is workbook-scoped, so Preview is too: each **logical** source sheet projects onto its **own** Preview surface whose id is `previewSheetIdFor(sheetId)` = `` `__preview__::${sheetId}` `` (`PREVIEW_SHEET_PREFIX = '__preview__::'`, both exported from `project.ts`). The projection diff is computed **per logical sheet** and each `setCells` op carries that sheet's per-sheet preview id, so colliding coordinates across sheets (e.g. `Sheet1!A1` and `Sheet2!A1`) land on distinct surfaces and never overwrite each other. The first time a given logical sheet is projected in a Preview session, the plan is prefixed with a `createPreviewSheet` for its surface; the **very first** surface created is also `activateSheet`d. `returnToPresent()` returns a `realSheet` plan that deletes **every** per-sheet Preview surface created during the session, then emits a single `activateSheet` carrying the **real** `SheetId` that was active when Preview began (captured at the first `goto`) — never a `BranchId` (branch ids and sheet ids are distinct namespaces). When no active real sheet is knowable, the `activateSheet` op is omitted and the shell restores the previously-active sheet itself. `returnToPresent()` flips HEAD back to present and is a no-op when not in Preview.
+
+### Pinned placeholder: `SheetMeta`
+
+The spec's `WorksheetDelta` (add/delete/rename/reorder — ADR-0005) implies the engine tracks per-sheet metadata, but the spec did not pin a shape for it. Pinned (minimal-but-sensible): the **stable `sheetId`** (a sheet keeps its id across a rename), its display **`name`**, and its **`order`** (0-based left-to-right tab position, kept dense by add/delete/reorder).
+
+```ts
+type SheetMeta = { sheetId: SheetId; name: string; order: number };
+```
+
+### Structural path semantics (Wave 2)
+
+A `StructuralObservation` becomes a `StructuralDelta` applied as a **coordinate remap** of the Shadow State (insert opens blank space and shifts cells down/right; delete removes the spanned cells and shifts the rest up/left). Per ADR-0001 it emits **no value diff** (a structural op is a coordinate transform, not a value change), and per ADR-0003 it **never rewrites formula text** — cell formulas are opaque strings the engine only relocates, never edits. Forward apply is deterministic (needed for replay). The `unsupportedKind` `IngestDiagnostic` code is now unreachable for `structural`/`worksheet`/`value`; it is retained for any future un-handled kind.
+
+### Branching & lifecycle (Wave 4)
+
+Implemented behind the frozen surface; signatures unchanged. Cited ADRs: ADR-0005 (workbook-scoped branching), ADR-0006 (drift + reconciliation + co-authoring), ADR-0013 (functional core).
+
+**`branch(from: StepRef)`** forks a **provisional** branch at `from` and promotes HEAD to its tip (editable Present). The fork's state is reconstructed at `from` and seeded as a **base keyframe at stepIndex −1** on the new branch (so the new branch's own forward-replay starts from the fork point); the Shadow State becomes that reconstructed state immediately. Branch ids are minted deterministically (`branch-1`, `branch-2`, …). `branch()` emits **only `setHead`** — it does **not** persist (`saveBranch`) yet. A provisional fork persists **lazily on its first `ingest`** (the first recorded Step prepends a `saveBranch` op and flips the branch to non-provisional). The implicit `main` root is never a saved `BranchMeta` and emits no `saveBranch`. If a Preview is active, `branch()` returns to Present first (a fork is a Present op).
+
+**`switch(branchId)`** checks out another branch's tip: it reconstructs the target tip, makes it the live Shadow State, and returns a **`formula`-mode `ReconcilePlan` targeting `realSheet`** (live writes onto the real worksheets, by logical sheet id — not preview surfaces). It is **NAVIGATION, not a Step** (no `appendDelta`; only `setHead`). **Provisional GC:** switching *away* from a **zero-Step provisional** branch discards it — its resident log/keyframes are dropped and a `deleteBranch` op is emitted. Switching to the current branch is a no-op (empty envelope). The `realSheetDiff(from, to)` helper (exported from `project.ts`) is the formula-mode live counterpart of the value-mode `projectionDiff`.
+
+**`attach(observed, persisted)`** (ADR-0006) hashes the observed live state and compares it to the persisted tip hash:
+
+- **No persisted head** → fresh workbook: seed the Shadow State from the observed slabs, no Step, empty envelope.
+- **Clean match** (`observed.contentHash === persisted.tipHash`) → restore HEAD from `persisted.head` (`setHead` only), no writes, no Step. Resumes tracking (clears any co-authoring suspension).
+- **Drift** → compute an itemized per-sheet `ReconciliationDelta` (the Shadow State is "before"; the observed slabs are "after" — value changes only, per-cell `{ addr, before, after }`), append it as a single inspectable **Reconciliation Step**, and advance the mirror to the observed state. No write-back (the user's current work is authoritative; pre-drift history stays previewable).
+
+The engine receives the already-computed `contentHash` (the shell does the canonical serialization + hash per ADR-0006); the engine compares hashes and itemizes the cell-level diff.
+
+**`detachToCoauthoring()`** (ADR-0006) sets a suspended-tracking flag and returns an **empty envelope with a `coauthoringSuspended` diagnostic** (not a Step). While suspended every `ingest` is a no-op with an `ingestSuspended` diagnostic. A clean `attach` clears suspension.
+
+**State-machine validity.** Mode-invalid ops never corrupt state — they return a no-op envelope plus a diagnostic: `ingest` in Preview → `ingestInPreview`; `ingest` while suspended → `ingestSuspended`. `IngestDiagnostic.code` now spans `'ingestInPreview' | 'unsupportedKind' | 'ingestSuspended' | 'coauthoringSuspended'`.
+
+### Pinned: `WorkbookSnapshot`, `PersistedHead`, `SheetDiff` (Wave 4 — promoted from TODO(spec))
+
+Wave 4 consumes these shapes, so they are now pinned (the bodies already in `types.ts` match):
+
+```ts
+interface WorkbookSnapshot {
+  workbookGuid: string;
+  contentHash: string;                                  // canonical hash (shell-computed) for clean-resume vs drift
+  sheets: { sheetId: SheetId; slab: CellSlab }[];        // observed live per-sheet content (anchored A1, row-major)
+}
+
+interface PersistedHead { head: Head; tipHash: string; } // the resume payload loaded from the store
+
+interface SheetDiff {                                     // one sheet's reconciliation diff (ADR-0006), inspectable
+  sheetId: SheetId;
+  cells: { addr: Rect; before: CellState; after: CellState }[];
+  structural: { changeType: StructuralChangeType; address: Rect; shiftDirection?: ShiftDirection }[];
+}
+```
+
+Drift reconciliation populates `SheetDiff.cells` (value changes only — content, not the untracked coordinate moves that produced it); `SheetDiff.structural` is reserved for future structural-drift capture and is currently always empty.
+
+### Queries & benchmark (Wave 5 — ADR-0004, ADR-0013)
+
+The query surface (`timeline`/`inspectStep`) is implemented behind the frozen interface; signatures unchanged. The `TimelineQuery`/`TimelineView`/`StepDetail` shapes — previously `TODO(spec)` — are now **pinned** (the bodies already in `types.ts` match):
+
+```ts
+interface TimelineQuery { branchId?: BranchId; fromStepIndex?: number; toStepIndex?: number; }
+interface TimelineView {
+  branches: BranchMeta[];                                  // the full resident fork graph (parent + forkedAt), tab order
+  steps: { ref: StepRef; kind: Delta['kind']; magnitude: number }[];
+}
+interface StepDetail {
+  ref: StepRef; kind: Delta['kind'];
+  cells: { addr: Rect; beforeFormula: string | null; afterFormula: string | null }[];
+}
+```
+
+**`timeline(opts?)`** is the histogram model. `view.branches` is always the **full** resident fork graph (the renderer needs the parents to position a scoped branch); `view.steps` are the ordered Steps, each carrying a **`magnitude`** — the histogram bar height — computed per Delta kind by the exported pure helper **`stepMagnitude(delta)`**:
+
+- **value** → its changed-cell count (a 50k-cell paste towers over single-cell edits).
+- **reconciliation** → its total per-sheet repaired-cell count.
+- **structural / worksheet** → a small fixed weight (**1**): a coordinate transform or tab op touches no cell content, so it is visible on the timeline but never a tall bar.
+
+`opts` filters the **Steps only**: `branchId` scopes to one branch; an inclusive `[fromStepIndex, toStepIndex]` window clips them. Default scope is every branch's Steps, branch-id ascending then stepIndex ascending.
+
+**`inspectStep(ref)`** returns per-cell formula-text metadata (`beforeFormula`/`afterFormula`) for the Preview inspect/diff UI (ADR-0008), via the exported pure helper **`stepFormulaCells(delta)`**: `value` cells map directly; `reconciliation` flattens its per-sheet cells; `structural`/`worksheet` Steps never rewrite formula text (ADR-0003) so they yield an empty list. A `ref` that does not name a recorded Step throws a `RangeError`.
+
+Both `stepMagnitude` and `stepFormulaCells` are exported from `@timeline/engine` (pure, total over every `Delta['kind']`).
+
+**Headless benchmark (`packages/engine/bench`, `bun run bench`)** — the engine-compute half of ADR-0004. A `ReplayChangeSource` emits synthetic Observations (50k- and 100k-cell pastes + N single-cell edits) → `TimelineEngineImpl` → a fake `RecordingRenderTarget` records the `ReconcileOp`s → `InMemoryStore` drains the `PersistOp`s. It measures ingest latency for the big pastes, replay latency reconstructing the tip after 100/1k/10k Steps, and keyframe serialize+gzip via the Node global `CompressionStream`, then prints a timing table. The **on-host half** (stages 1 + 5 — `getValues` I/O floor + end-to-end paste→Step committed against a live Excel host) needs real Excel and is out of scope here. The bench compiles under a sibling `tsconfig.bench.json` (adds the DOM lib for `CompressionStream`/`Blob`/`Response`); the engine's `src/**` stays DOM-free, preserving engine purity.
+
 

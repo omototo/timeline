@@ -20,6 +20,19 @@ export default tseslint.config(
         tsconfigRootDir: import.meta.dirname,
       },
     },
+    rules: {
+      // Leading-underscore params/vars are an intentional "unused on purpose"
+      // marker — e.g. not-yet-implemented interface stubs that must keep their
+      // frozen signatures. Honour the convention rather than fight it.
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+        },
+      ],
+    },
   },
   // Engine-purity wall: the engine must not reach for Office.js, React, or DOM globals.
   {
