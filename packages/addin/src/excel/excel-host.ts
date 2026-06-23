@@ -13,7 +13,10 @@ export type RealExcelRun = typeof Excel.run;
 interface ExcelHostGlobal {
   Excel?: { run: RealExcelRun };
   Office?: {
-    context?: { requirements?: { isSetSupported(name: string, version?: string): boolean } };
+    context?: {
+      requirements?: { isSetSupported(name: string, version?: string): boolean };
+      document?: { url?: string };
+    };
   };
 }
 
@@ -33,4 +36,13 @@ export function getIsSetSupported(): IsSetSupported {
     return () => true;
   }
   return (name, version) => requirements.isSetSupported(name, version);
+}
+
+/**
+ * A stable per-workbook key (the document url) used to isolate persisted history
+ * so two workbooks never share a timeline. Null when not running in Office (one
+ * shared store) — see ADR-0007 (history is otherwise origin-scoped).
+ */
+export function getWorkbookKey(): string | null {
+  return (globalThis as ExcelHostGlobal).Office?.context?.document?.url ?? null;
 }

@@ -15,6 +15,7 @@ import type {
   Head,
   Observation,
   PersistedHead,
+  RehydrationData,
   StepDetail,
   StepRef,
   TimelineQuery,
@@ -24,6 +25,13 @@ import type {
 
 export interface TimelineEngine {
   // Lifecycle
+  /**
+   * Restore the in-memory timeline (log, branches, keyframes, head) from history
+   * loaded off a HistoryStore, BEFORE `attach`. A fork's base keyframe is
+   * recomputed from its parent at the fork point. Pure state restore — emits
+   * nothing; the shell then calls `attach` to reseed the Shadow State.
+   */
+  rehydrate(data: RehydrationData): void;
   /** hash+compare; clean resume OR drift -> Reconciliation Step. */
   attach(observed: WorkbookSnapshot, persisted: PersistedHead | null): EffectEnvelope;
   /** on source:'remote' -> suspend tracking (ADR-0006). */

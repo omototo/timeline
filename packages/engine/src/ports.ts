@@ -19,6 +19,8 @@ export interface HistoryStore {
     branchId: BranchId,
     stepIndex: number,
   ): Promise<{ stepIndex: number; state: unknown } | null>;
+  /** Returns every keyframe for a branch, step-ascending (for rehydration on launch). */
+  listKeyframes(branchId: BranchId): Promise<{ stepIndex: number; state: unknown }[]>;
   /** Returns the inclusive [from, to] range of deltas for a branch. */
   loadDeltas(branchId: BranchId, from: number, to: number): Promise<Delta[]>;
   getHead(): Promise<Head | null>;
