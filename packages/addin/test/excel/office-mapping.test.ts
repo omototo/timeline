@@ -6,6 +6,7 @@ import {
   toInsertShift,
   toDeleteShift,
   toValueType,
+  type ParsedRect,
 } from '../../src/excel/office-mapping.ts';
 import { ExpectedWriteSet } from '../../src/excel/expected-write-set.ts';
 
@@ -38,6 +39,71 @@ describe('parseAddress', () => {
   it('throws on a malformed address', () => {
     expect(() => parseAddress('not-a-cell')).toThrow('cannot parse');
     expect(() => parseAddress('A1:zzz')).toThrow('cannot parse');
+  });
+
+  it('parses a normal range (B2:D4)', () => {
+    expect(parseAddress('B2:D4')).toEqual({ startRow: 1, startCol: 1, rowCount: 3, colCount: 3 });
+  });
+
+  it('strips absolute-reference $ anchors ($B$2)', () => {
+    expect(parseAddress('$B$2')).toEqual({ startRow: 1, startCol: 1, rowCount: 1, colCount: 1 });
+    expect(parseAddress('$B$2:$D$4')).toEqual({
+      startRow: 1,
+      startCol: 1,
+      rowCount: 3,
+      colCount: 3,
+    });
+  });
+
+  it('strips a sheet qualifier on a single cell (Sheet1!A1)', () => {
+    expect(parseAddress('Sheet1!A1')).toEqual({
+      startRow: 0,
+      startCol: 0,
+      rowCount: 1,
+      colCount: 1,
+    });
+  });
+
+  it('parses a whole-row range (3:3) spanning every column', () => {
+    expect(parseAddress('3:3')).toEqual({
+      startRow: 2,
+      startCol: 0,
+      rowCount: 1,
+      colCount: 16_384,
+    });
+    expect(parseAddress('5:7')).toEqual({
+      startRow: 4,
+      startCol: 0,
+      rowCount: 3,
+      colCount: 16_384,
+    });
+  });
+
+  it('parses a whole-column range (C:C) spanning every row', () => {
+    expect(parseAddress('C:C')).toEqual({
+      startRow: 0,
+      startCol: 2,
+      rowCount: 1_048_576,
+      colCount: 1,
+    });
+    expect(parseAddress('B:D')).toEqual({
+      startRow: 0,
+      startCol: 1,
+      rowCount: 1_048_576,
+      colCount: 3,
+    });
+  });
+
+  it('does not throw inside an awaited onChanged-style handler for structural forms', async () => {
+    // parseAddress runs inside an awaited onChanged handler; the structural
+    // forms Excel emits must resolve, never reject.
+    const handler = async (address: string): Promise<ParsedRect> => {
+      await Promise.resolve();
+      return parseAddress(address);
+    };
+    for (const addr of ['3:3', 'C:C', '$B$2', 'Sheet1!A1', 'B2:D4']) {
+      await expect(handler(addr)).resolves.toBeDefined();
+    }
   });
 });
 

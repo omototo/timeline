@@ -265,6 +265,11 @@ export class OfficeChangeSource implements ChangeSource {
       // columns at 16,384, well under the 5,000,000-cell limit), so it is read
       // as-is — this also avoids unbounded recursion.
       if (range.cellCount > this.#maxCellsPerRead && rect.rowCount > 1) {
+        // The cell-count probe range is a tracked proxy we will not reuse once
+        // we recurse; untrack it here (as the read loop does on its tile) so it
+        // does not leak across the nested `Excel.run`s the recursion opens.
+        range.untrack();
+        await ctx.sync();
         const half = Math.floor(rect.rowCount / 2);
         const top = await this.#readBack(sheetId, { ...rect, rowCount: half });
         const bottom = await this.#readBack(sheetId, {

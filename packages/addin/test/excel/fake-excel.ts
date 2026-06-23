@@ -113,7 +113,13 @@ class FakeRange implements RangeLike {
   load(properties: string[] | string): void {
     const props = Array.isArray(properties) ? properties : [properties];
     if (props.includes('cellCount')) {
-      this.cellCount = this.rowCount * this.colCount;
+      // The host normally reports rowCount * colCount, but a test can install a
+      // hook to make a probe over-report (modelling Excel returning a larger
+      // actual count than the adapter predicted) to drive the defensive
+      // sub-tiling branch.
+      this.cellCount =
+        this.sheet.cellCountFor?.(this.startRow, this.startCol, this.rowCount, this.colCount) ??
+        this.rowCount * this.colCount;
     }
     if (props.includes('values')) {
       this.#values = this.#read((c) => c.value ?? '');
@@ -228,6 +234,13 @@ export class FakeWorksheet implements WorksheetLike {
   readonly onChanged = new EventHub<WorksheetChangedEventArgsLike>();
   readonly onFormatChanged = new EventHub<WorksheetChangedEventArgsLike>();
   readonly #grid = new Map<string, FakeCell>();
+
+  /**
+   * Optional hook letting a test override the reported `cellCount` for a probed
+   * rect — used to model the host returning a larger actual count than the
+   * adapter predicted, exercising the defensive sub-tiling path.
+   */
+  cellCountFor?: (startRow: number, startCol: number, rowCount: number, colCount: number) => number;
 
   constructor(
     readonly workbook: FakeWorkbook,

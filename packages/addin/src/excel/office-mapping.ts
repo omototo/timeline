@@ -96,7 +96,21 @@ export function toValueType(raw: string): ValueType {
   }
 }
 
-const COL_RE = /^([A-Z]+)(\d+)$/;
+/**
+ * Excel grid dimensions, used as the spanning extent for whole-row / whole-column
+ * references (e.g. `"3:3"` spans all 16,384 columns; `"C:C"` spans all 1,048,576
+ * rows). Real Excel emits these bare row/column forms on structural change events,
+ * so `parseAddress` must accept them without throwing (it runs inside an awaited
+ * `onChanged` handler). We represent the unbounded dimension as a sentinel extent
+ * rather than adding a `wholeRow`/`wholeColumn` flag, keeping the `ParsedRect`
+ * shape (and the engine `Rect` it maps to) unchanged — the least-invasive option.
+ */
+const MAX_ROWS = 1_048_576;
+const MAX_COLS = 16_384;
+
+const FULL_CELL_RE = /^([A-Z]+)(\d+)$/;
+const COL_ONLY_RE = /^([A-Z]+)$/;
+const ROW_ONLY_RE = /^(\d+)$/;
 
 /** Converts a column letter run (A, B, …, AA) to a zero-based index. */
 function colToIndex(letters: string): number {
@@ -107,31 +121,88 @@ function colToIndex(letters: string): number {
   return n - 1;
 }
 
-/**
- * Parses an A1-style address (optionally sheet-qualified, optionally a range)
- * into a zero-based rectangle. Single cells yield a 1×1 rect.
- *
- * Examples: `"B2"`, `"B2:D5"`, `"Sheet1!B2:D5"`.
- */
-function parseCell(token: string | undefined, address: string): { row: number; col: number } {
-  const match = COL_RE.exec(token ?? '');
-  const letters = match?.[1];
-  const digits = match?.[2];
-  if (letters === undefined || digits === undefined) {
-    throw new Error(`parseAddress: cannot parse address "${address}".`);
-  }
-  return { row: Number(digits) - 1, col: colToIndex(letters) };
+/** One endpoint of an address: a full cell, a bare column, or a bare row. */
+type Endpoint =
+  | { kind: 'cell'; row: number; col: number }
+  | { kind: 'col'; col: number }
+  | { kind: 'row'; row: number };
+
+/** Strip `$` anchors and any leading `Sheet!` qualifier from one endpoint token. */
+function normalizeToken(token: string): string {
+  return token.replace(/\$/g, '');
 }
 
+function parseEndpoint(token: string, address: string): Endpoint {
+  const full = FULL_CELL_RE.exec(token);
+  if (full?.[1] !== undefined && full[2] !== undefined) {
+    return { kind: 'cell', row: Number(full[2]) - 1, col: colToIndex(full[1]) };
+  }
+  const colOnly = COL_ONLY_RE.exec(token);
+  if (colOnly?.[1] !== undefined) {
+    return { kind: 'col', col: colToIndex(colOnly[1]) };
+  }
+  const rowOnly = ROW_ONLY_RE.exec(token);
+  if (rowOnly?.[1] !== undefined) {
+    return { kind: 'row', row: Number(rowOnly[1]) - 1 };
+  }
+  throw new Error(`parseAddress: cannot parse address "${address}".`);
+}
+
+/**
+ * Parses an A1-style address into a zero-based rectangle. Robust to the forms
+ * real Excel emits on structural change events: single cells (`"B2"`), ranges
+ * (`"B2:D5"`), absolute references (`"$B$2"`, `"$B$2:$D$4"`), sheet qualifiers
+ * (`"Sheet1!A1"`), whole-row ranges (`"3:3"`, `"5:7"` → span all columns) and
+ * whole-column ranges (`"C:C"`, `"B:D"` → span all rows). Single cells yield a
+ * 1×1 rect. Must NOT throw on these structural forms — only on genuinely
+ * unparseable input.
+ */
 export function parseAddress(address: string): ParsedRect {
   const bang = address.lastIndexOf('!');
   const local = bang >= 0 ? address.slice(bang + 1) : address;
-  const [start, end] = local.split(':');
-  const from = parseCell(start, address);
-  if (end === undefined) {
-    return { startRow: from.row, startCol: from.col, rowCount: 1, colCount: 1 };
+  const [rawStart, rawEnd, extra] = local.split(':');
+  if (extra !== undefined || rawStart === undefined) {
+    throw new Error(`parseAddress: cannot parse address "${address}".`);
   }
-  const to = parseCell(end, address);
+  const from = parseEndpoint(normalizeToken(rawStart), address);
+
+  if (rawEnd === undefined) {
+    // A bare column ("C") or bare row ("3") with no `:` is still a full span.
+    if (from.kind === 'cell') {
+      return { startRow: from.row, startCol: from.col, rowCount: 1, colCount: 1 };
+    }
+    return spanFromEndpoints(from, from, address);
+  }
+
+  const to = parseEndpoint(normalizeToken(rawEnd), address);
+  return spanFromEndpoints(from, to, address);
+}
+
+/** Combine two endpoints into a rect, spanning the unbounded dimension for whole-row/column forms. */
+function spanFromEndpoints(from: Endpoint, to: Endpoint, address: string): ParsedRect {
+  // Whole-column range: "C:C" / "B:D" — both endpoints are columns, span all rows.
+  if (from.kind === 'col' && to.kind === 'col') {
+    return {
+      startRow: 0,
+      startCol: Math.min(from.col, to.col),
+      rowCount: MAX_ROWS,
+      colCount: Math.abs(to.col - from.col) + 1,
+    };
+  }
+  // Whole-row range: "3:3" / "5:7" — both endpoints are rows, span all columns.
+  if (from.kind === 'row' && to.kind === 'row') {
+    return {
+      startRow: Math.min(from.row, to.row),
+      startCol: 0,
+      rowCount: Math.abs(to.row - from.row) + 1,
+      colCount: MAX_COLS,
+    };
+  }
+  // Otherwise both endpoints must be full cells (mixing a cell with a bare
+  // row/column, e.g. "A1:zzz" or "A1:3", is not an address Excel emits).
+  if (from.kind !== 'cell' || to.kind !== 'cell') {
+    throw new Error(`parseAddress: cannot parse address "${address}".`);
+  }
   return {
     startRow: Math.min(from.row, to.row),
     startCol: Math.min(from.col, to.col),

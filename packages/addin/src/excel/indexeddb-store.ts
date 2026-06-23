@@ -147,13 +147,25 @@ export class IndexedDbStore implements HistoryStore {
     const db = this.#requireDb();
     const tx = db.transaction(STORE_DELTAS, 'readwrite');
     const store = tx.objectStore(STORE_DELTAS);
-    // stepIndex is the append position = current count for this branch. The
-    // store is append-only and keyed by [branchId, stepIndex].
-    const stepIndex = await promisifyRequest(
-      store.count(IDBKeyRange.bound([branchId, -Infinity], [branchId, Infinity])),
-    );
-    const record: DeltaRecord = { branchId, stepIndex, delta };
-    store.put(record);
+    // The next stepIndex is one past the branch's current MAX key. We derive it
+    // from a `prev` cursor over this branch's [branchId, *] key range and `put`
+    // inside the cursor's success callback — keeping a SINGLE active transaction.
+    //
+    // The previous code did `await count()` then `put()`: after the await the
+    // IDB transaction goes inactive, so the put could throw
+    // `TransactionInactiveError` on real IndexedDB (fake-indexeddb is lenient
+    // and masked it). Driving
+    // the put from the cursor callback (no intervening awaited microtask) avoids
+    // that, and deriving from the actual max key — not a separate count — keeps
+    // sequential appends correct even if the store ever became non-contiguous.
+    const range = IDBKeyRange.bound([branchId, -Infinity], [branchId, Infinity]);
+    const cursorRequest = store.openCursor(range, 'prev');
+    cursorRequest.onsuccess = (): void => {
+      const cursor = cursorRequest.result;
+      const lastIndex = cursor === null ? -1 : (cursor.value as DeltaRecord).stepIndex;
+      const record: DeltaRecord = { branchId, stepIndex: lastIndex + 1, delta };
+      store.put(record);
+    };
     await awaitTransaction(tx);
   }
 

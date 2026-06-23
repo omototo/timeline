@@ -237,6 +237,32 @@ describe('OfficeChangeSource', () => {
     ]);
   });
 
+  it('untracks the cell-count probe range when taking the defensive sub-tiling branch', async () => {
+    const sheet = workbook.addSheet('Sheet1');
+    sheet.setCell(0, 0, { value: 10, valueType: 'Double' });
+    sheet.setCell(1, 0, { value: 11, valueType: 'Double' });
+    // Make a multi-row probe over-report (100 > limit) while single-row tiles
+    // report honestly — this drives the defensive row-halving branch, whose
+    // probe range must be untracked (the bug: it leaked).
+    sheet.cellCountFor = (_startRow, _startCol, rowCount): number =>
+      rowCount > 1 ? 100 : rowCount;
+    const timer = manualTimer();
+    const src = makeSource({
+      maxCellsPerRead: 10,
+      setTimer: timer.setTimer,
+      clearTimer: timer.clearTimer,
+    });
+    await src.start((o) => observed.push(o));
+
+    await sheet.onChanged.fire(changedEvent({ worksheetId: sheet.id, address: 'A1:A2' }));
+    timer.flush();
+
+    const obs = observed[0] as ValueObservation;
+    expect(obs.after.values).toEqual([[10], [11]]);
+    // One untrack for the defensive probe range + one per single-row read tile.
+    expect(workbook.untrackCount).toBe(3);
+  });
+
   it('registers no onMoved handler when the host lacks the collection event', async () => {
     const sheet = workbook.addSheet('Sheet1');
     // Simulate a host without the reorder event.

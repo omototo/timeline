@@ -90,6 +90,22 @@ describe('IndexedDbStore', () => {
       expect(await store.loadDeltas(BRANCH, 0, 2)).toEqual(deltas);
     });
 
+    it('assigns strictly increasing indices to sequential appends, ordered by loadDeltas', async () => {
+      // Distinguish each delta by its ordinal (carried in startRow) so we can
+      // assert both the order AND that each landed at a distinct, increasing key.
+      const appended = Array.from({ length: 6 }, (_, i) => structuralDelta(i));
+      for (const d of appended) {
+        await store.appendDelta(BRANCH, d);
+      }
+      const loaded = await store.loadDeltas(BRANCH, 0, appended.length - 1);
+      // loadDeltas reads the [branchId, stepIndex] range in key order, so this
+      // round-trip proves the appended stepIndices are strictly increasing and
+      // contiguous (a duplicate or out-of-order key would corrupt this).
+      expect(loaded).toEqual(appended);
+      const ordinals = loaded.map((d) => (d as StructuralDelta).address.startRow);
+      expect(ordinals).toEqual([0, 1, 2, 3, 4, 5]);
+    });
+
     it('returns the inclusive [from, to] range', async () => {
       for (let i = 0; i < 5; i++) {
         await store.appendDelta(BRANCH, structuralDelta(i));
