@@ -28,7 +28,6 @@ jobs:
           # No /code-review plugin (errors on our tsc -b refs) and no tool allowlist
           # (an allowlist blocks the built-in commenting).
           use_sticky_comment: true
-          track_progress: true
           prompt: |
             Review this pull request. Focus on correctness and bugs, the engine-purity
             rule (no Office.js / DOM / React under `packages/engine`), and the base rules
