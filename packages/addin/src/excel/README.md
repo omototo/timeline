@@ -34,3 +34,12 @@ The **shell** that wires the pure engine to Excel. Everything here is the only c
 - Add `@types/office-js` (or the `office-js` runtime types) as an addin dev dependency.
 - Run `bun run typecheck && bun run lint && bun run test` green before the PR.
 - Spikes that gate correctness here (delete-path refs, event fan-out, undo, IndexedDB eviction) are Stream D — coordinate before relying on unverified behavior.
+
+## Deferred to slice 3 (real `Excel.run` wiring) — from automated review
+
+These are correct gaps to close when the adapters are wired to a live host; they are inert while the engine isn't connected:
+
+- **`activateSheet` must call `Worksheet.activate()`**, not flip visibility — to focus the preview sheet on `goto` and restore the real sheet on `returnToPresent` (`render-target.ts`).
+- **`RealSheetRenderTarget.reconcile` must handle lifecycle ops** (`deletePreviewSheet`, `activateSheet`), not only `setCells`/`applyStructural` — today they are dropped, which would leak preview sheets and skip focus restore.
+- **Normalize the echo-guard key** below ExcelApi 1.14: match the expected-write key against the _normalized_ address (consistent with `parseAddress`) so a structurally-shifted `args.address` can't re-ingest our own write as a user edit.
+- **`ChangeSource.onObservation` contract**: align the doc comment ("once per debounced action") with `#flush` (fires once per Observation), or implement the flush=Step batching (the deferred interface refinement).
