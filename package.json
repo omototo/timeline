@@ -5,14 +5,15 @@
   "type": "module",
   "license": "Apache-2.0",
   "author": "The Excel Parametric Timeline contributors",
-  "homepage": "https://github.com/verifi-finance/excel-parametric-timeline#readme",
+  "homepage": "https://github.com/omototo/timeline#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/verifi-finance/excel-parametric-timeline.git"
+    "url": "https://github.com/omototo/timeline.git"
   },
   "bugs": {
-    "url": "https://github.com/verifi-finance/excel-parametric-timeline/issues"
+    "url": "https://github.com/omototo/timeline/issues"
   },
+  "funding": "https://buymeacoffee.com/omototo",
   "workspaces": [
     "packages/*"
   ],

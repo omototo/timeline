@@ -6,9 +6,10 @@
 discussions, or pull requests.**
 
 If you believe you have found a security vulnerability in Excel Parametric
-Timeline, report it privately by email to:
+Timeline, report it privately through GitHub's private vulnerability reporting:
 
-**alex@verifi.finance**
+**[Open a security advisory](https://github.com/omototo/timeline/security/advisories/new)**
+(repository → **Security** tab → **Report a vulnerability**)
 
 Please include as much of the following as you can:
 
@@ -32,4 +33,4 @@ please upgrade to the latest version to receive fixes.
 
 This repository contains the open-core (the `@timeline/engine` and the core
 add-in). Reports about the open-source code here are always in scope. For issues
-specific to the official AppSource binary distribution, the same contact applies.
+specific to the official AppSource binary distribution, report them the same way.

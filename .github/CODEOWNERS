@@ -1,0 +1,5 @@
+# Code owners — required reviewers on every pull request.
+# Combined with branch protection (require code owner review), this means
+# no change reaches `main` without @omototo's approval.
+
+* @omototo
