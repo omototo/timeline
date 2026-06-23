@@ -1,4 +1,4 @@
-import type { SheetId, StepKind, TimelineStep, TimelineView } from './contract';
+import type { SheetId, StepKind, TimelineStep, TimelineView } from './contract.ts';
 
 const SHEETS: SheetId[] = ['Sheet1', 'Assumptions', 'Summary', 'Model'];
 const FALLBACK_SHEET: SheetId = 'Sheet1';
