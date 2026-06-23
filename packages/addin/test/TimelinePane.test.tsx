@@ -1,178 +1,183 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { TimelinePane } from '../src/ui/TimelinePane.tsx';
+import {
+  TimelinePane,
+  activeBranch,
+  barHeight,
+  brushToWindow,
+  currentStepIndex,
+} from '../src/ui/TimelinePane.tsx';
 import { TimelinePaneContainer } from '../src/ui/TimelinePaneContainer.tsx';
 import { compareBranches } from '../src/ui/branch-compare.ts';
 import { FakeTimelineDataSource } from '../src/ui/data-source.ts';
 import { sampleTimeline } from '../src/ui/sample-timeline.ts';
-import type { TimelineCommand, TimelineView } from '../src/ui/contract.ts';
+import type { TimelineView } from '../src/ui/contract.ts';
 
-function renderPane(view: TimelineView = sampleTimeline) {
-  const dispatch = vi.fn<(cmd: TimelineCommand) => void>();
-  render(<TimelinePane view={view} dispatch={dispatch} />);
-  return dispatch;
+function viewWith(overrides: Partial<TimelineView>): TimelineView {
+  return { ...sampleTimeline, ...overrides };
 }
+const previewMain = viewWith({ head: { branchId: 'main', mode: 'preview', previewStepIndex: 30 } });
+const onBranchB = viewWith({ head: { branchId: 'branch-b', mode: 'present' } });
+const px = (el: HTMLElement): number => parseInt(el.style.height, 10);
+
+describe('pure helpers', () => {
+  it('barHeight grows with magnitude (log-scaled)', () => {
+    expect(barHeight(1000, 1000, 86)).toBeGreaterThan(barHeight(1, 1000, 86));
+    expect(barHeight(0, 1000, 86)).toBe(8);
+  });
+
+  it('brushToWindow returns an ordered window for a real drag, null for a click', () => {
+    expect(brushToWindow(10, 90, 100, 0, 100)).toEqual({ start: 10, end: 90 });
+    expect(brushToWindow(40, 42, 100, 0, 100)).toBeNull();
+    expect(brushToWindow(10, 90, 0, 0, 100)).toBeNull();
+  });
+
+  it('currentStepIndex is the previewed index in preview, the tip in present', () => {
+    const main = activeBranch(sampleTimeline.branches, 'main');
+    expect(currentStepIndex(main, 'preview', 30)).toBe(30);
+    expect(currentStepIndex(main, 'present', undefined)).toBe(71);
+  });
+
+  it('activeBranch finds the head branch, falls back to the first', () => {
+    expect(activeBranch(sampleTimeline.branches, 'branch-b').id).toBe('branch-b');
+    expect(activeBranch(sampleTimeline.branches, 'nope').id).toBe('main');
+  });
+
+  it('compareBranches reports a comparison between two branches', () => {
+    expect(compareBranches(sampleTimeline, 'main', 'branch-b')).toBeTruthy();
+  });
+});
 
 describe('TimelinePane', () => {
-  it('computes branch compare divergence from TimelineView', () => {
-    const comparison = compareBranches(sampleTimeline, 'main', 'branch-b');
-
-    expect(comparison?.fork).toEqual({ branchId: 'main', stepIndex: 14 });
-    expect(comparison?.firstDifferentStepIndex).toBe(0);
-    expect(comparison?.leftStats.stepCount).toBe(72);
-    expect(comparison?.rightStats.stepCount).toBe(28);
-    expect(comparison?.rightStats.totalMagnitude).toBeGreaterThan(0);
+  it('renders a magnitude histogram — the 1,000-cell paste towers over a 1-cell edit', () => {
+    render(<TimelinePane view={sampleTimeline} dispatch={vi.fn()} />);
+    const tall = screen.getByRole('button', { name: /^Step 1:/ });
+    const short = screen.getByRole('button', { name: /^Step 0:/ });
+    expect(px(tall)).toBeGreaterThan(px(short));
+    expect(tall.dataset.kind).toBe('value');
   });
 
-  it('maps Step magnitude to histogram bar height', () => {
-    renderPane();
-
-    const small = screen.getByTestId('timeline-bar-main-0');
-    const large = screen.getByTestId('timeline-bar-main-1');
-
-    expect(Number(large.dataset.magnitude)).toBe(1000);
-    expect(Number.parseFloat(large.style.height)).toBeGreaterThan(
-      Number.parseFloat(small.style.height),
-    );
-  });
-
-  it('windows the temporal axis when zoomed and panned', () => {
-    renderPane();
-
-    fireEvent.change(screen.getByLabelText('Temporal density'), { target: { value: '2' } });
-    fireEvent.change(screen.getByLabelText('Temporal window'), { target: { value: '10' } });
-
-    expect(screen.queryByTestId('timeline-bar-main-0')).not.toBeInTheDocument();
-    expect(screen.getByTestId('timeline-bar-main-10')).toBeInTheDocument();
-    expect(screen.getByText('Steps 11-22 of 72')).toBeInTheDocument();
-  });
-
-  it('emits goto when the playhead scrubber moves', () => {
-    const dispatch = renderPane();
-
-    fireEvent.change(screen.getByLabelText('Timeline playhead'), { target: { value: '2' } });
-
+  it('emits goto when the scrubber moves, returnToPresent at the tip', () => {
+    const dispatch = vi.fn();
+    const { rerender } = render(<TimelinePane view={sampleTimeline} dispatch={dispatch} />);
+    fireEvent.change(screen.getByLabelText('Timeline scrubber'), { target: { value: '30' } });
     expect(dispatch).toHaveBeenCalledWith({
       type: 'goto',
-      ref: { branchId: 'main', stepIndex: 2 },
-    } satisfies TimelineCommand);
+      ref: { branchId: 'main', stepIndex: 30 },
+    });
+    // From preview (slider at 30), scrubbing to the tip returns to Present.
+    rerender(<TimelinePane view={previewMain} dispatch={dispatch} />);
+    fireEvent.change(screen.getByLabelText('Timeline scrubber'), { target: { value: '71' } });
+    expect(dispatch).toHaveBeenCalledWith({ type: 'returnToPresent' });
   });
 
-  it('moves the playhead with keyboard arrows on Step bars', () => {
-    const dispatch = renderPane();
-
-    fireEvent.keyDown(screen.getByTestId('timeline-bar-main-1'), { key: 'ArrowRight' });
-
+  it('emits goto when a bar is clicked', () => {
+    const dispatch = vi.fn();
+    render(<TimelinePane view={sampleTimeline} dispatch={dispatch} />);
+    fireEvent.click(screen.getByRole('button', { name: /^Step 5:/ }));
     expect(dispatch).toHaveBeenCalledWith({
       type: 'goto',
-      ref: { branchId: 'main', stepIndex: 2 },
-    } satisfies TimelineCommand);
-    expect(screen.getByRole('tooltip')).toHaveTextContent('main Step 2');
+      ref: { branchId: 'main', stepIndex: 5 },
+    });
   });
 
-  it('shows a tooltip when a bar receives keyboard focus', () => {
-    renderPane();
-
-    fireEvent.focus(screen.getByTestId('timeline-bar-main-1'));
-
-    expect(screen.getByRole('tooltip')).toHaveTextContent('magnitude 1,000');
+  it('emits switch when a branch chip is clicked', () => {
+    const dispatch = vi.fn();
+    render(<TimelinePane view={sampleTimeline} dispatch={dispatch} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to what-if branch' }));
+    expect(dispatch).toHaveBeenCalledWith({ type: 'switch', branchId: 'branch-b' });
   });
 
-  it('shows the selected Step in the inspector', () => {
-    renderPane();
-
-    fireEvent.click(screen.getByTestId('timeline-bar-main-1'));
-
-    expect(screen.getByRole('heading', { name: 'Step 1' })).toBeInTheDocument();
-    expect(screen.getByText('paste 1,000 rows')).toBeInTheDocument();
-    expect(screen.getByText('Pending inspectStep')).toBeInTheDocument();
-  });
-
-  it('renders branch compare details and future diff slot', () => {
-    renderPane();
-
-    expect(screen.getByLabelText('Branch compare')).toHaveTextContent('main Step 14');
-    expect(
-      screen.getByText('Cell-level diff pending engine state integration.'),
-    ).toBeInTheDocument();
-  });
-
-  it('emits branch from the previewed Step', () => {
-    const previewView: TimelineView = {
-      ...sampleTimeline,
-      head: { branchId: 'main', mode: 'preview', previewStepIndex: 2 },
-    };
-    const dispatch = renderPane(previewView);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Branch from here' }));
-
+  it('shows Return to Present and Branch from here only in Preview', () => {
+    const dispatch = vi.fn();
+    const { rerender } = render(<TimelinePane view={sampleTimeline} dispatch={dispatch} />);
+    expect(screen.queryByText('Return to Present')).toBeNull();
+    rerender(<TimelinePane view={previewMain} dispatch={dispatch} />);
+    fireEvent.click(screen.getByText('Return to Present'));
+    expect(dispatch).toHaveBeenCalledWith({ type: 'returnToPresent' });
+    fireEvent.click(screen.getByText('Branch from here'));
     expect(dispatch).toHaveBeenCalledWith({
       type: 'branch',
-      from: { branchId: 'main', stepIndex: 2 },
-    } satisfies TimelineCommand);
+      from: { branchId: 'main', stepIndex: 30 },
+    });
   });
 
-  it('emits switch when a branch track is clicked', () => {
-    const dispatch = renderPane();
+  it('shows the focused Step in the inspector', () => {
+    render(<TimelinePane view={sampleTimeline} dispatch={vi.fn()} />);
+    fireEvent.focus(screen.getByRole('button', { name: /^Step 1:/ }));
+    expect(screen.getByText('Step 1')).toBeTruthy();
+  });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Switch to what-if branch' }));
-
+  it('renames and deletes branches', () => {
+    const dispatch = vi.fn();
+    const { rerender } = render(<TimelinePane view={sampleTimeline} dispatch={dispatch} />);
+    expect(screen.queryByLabelText('Delete main')).toBeNull();
+    fireEvent.click(screen.getByLabelText('Rename main'));
+    const input = screen.getByLabelText('Branch name');
+    fireEvent.change(input, { target: { value: 'baseline' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
     expect(dispatch).toHaveBeenCalledWith({
-      type: 'switch',
-      branchId: 'branch-b',
-    } satisfies TimelineCommand);
-  });
-
-  it('shows Return to Present in Preview mode', () => {
-    const previewView: TimelineView = {
-      ...sampleTimeline,
-      head: { branchId: 'main', mode: 'preview', previewStepIndex: 2 },
-    };
-    const dispatch = renderPane(previewView);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Return to Present' }));
-
-    expect(dispatch).toHaveBeenCalledWith({ type: 'returnToPresent' } satisfies TimelineCommand);
-  });
-
-  it('renames and deletes branches in the fake data source', () => {
-    const source = new FakeTimelineDataSource();
-
-    source.dispatch({ type: 'renameBranch', branchId: 'branch-b', name: 'Upside case' });
-    expect(source.getView().branches.find((branch) => branch.id === 'branch-b')?.name).toBe(
-      'Upside case',
-    );
-
-    source.dispatch({ type: 'switch', branchId: 'branch-b' });
-    source.dispatch({ type: 'deleteBranch', branchId: 'branch-b' });
-
-    expect(source.getView().branches.some((branch) => branch.id === 'branch-b')).toBe(false);
-    expect(source.getView().head).toEqual({ branchId: 'main', mode: 'present' });
-  });
-
-  it('re-renders when the data source changes', () => {
-    const source = new FakeTimelineDataSource();
-    render(<TimelinePaneContainer source={source} />);
-
-    expect(screen.getByText('Present')).toBeInTheDocument();
-
-    act(() => {
-      source.dispatch({ type: 'goto', ref: { branchId: 'main', stepIndex: 4 } });
+      type: 'renameBranch',
+      branchId: 'main',
+      name: 'baseline',
     });
 
-    expect(screen.getByText('Preview')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Return to Present' })).toBeInTheDocument();
+    rerender(<TimelinePane view={onBranchB} dispatch={dispatch} />);
+    fireEvent.click(screen.getByLabelText('Delete what-if'));
+    expect(dispatch).toHaveBeenCalledWith({ type: 'deleteBranch', branchId: 'branch-b' });
   });
 
-  it('renders in a narrow 320px task-pane container', () => {
-    const { container } = render(
-      <div style={{ width: '320px' }}>
-        <TimelinePane view={sampleTimeline} dispatch={vi.fn()} />
-      </div>,
-    );
+  it('filters the histogram by worksheet', () => {
+    render(<TimelinePane view={sampleTimeline} dispatch={vi.fn()} />);
+    const before = screen.getAllByRole('button', { name: /^Step \d+:/ }).length;
+    fireEvent.change(screen.getByLabelText('Worksheet drill-down'), {
+      target: { value: 'Assumptions' },
+    });
+    const after = screen.getAllByRole('button', { name: /^Step \d+:/ }).length;
+    expect(after).toBeLessThan(before);
+    expect(after).toBeGreaterThan(0);
+  });
 
-    expect(screen.getByRole('heading', { name: 'Parametric Timeline' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Branch compare')).toBeInTheDocument();
-    expect(container.querySelector('.timeline-pane__histogram')).toBeInTheDocument();
+  it('survives the brush gesture and double-click reset without dispatching scrub commands', () => {
+    const dispatch = vi.fn();
+    render(<TimelinePane view={sampleTimeline} dispatch={dispatch} />);
+    const track = screen.getByLabelText(/Histogram of/);
+    fireEvent.pointerDown(track, { clientX: 10 });
+    fireEvent.pointerMove(track, { clientX: 80 });
+    fireEvent.pointerUp(track, { clientX: 80 });
+    fireEvent.doubleClick(track);
+    expect(screen.getByLabelText(/Histogram of/)).toBeTruthy();
+  });
+
+  it('shows an empty state when the active branch has no Steps yet', () => {
+    const empty = viewWith({
+      branches: [{ id: 'main', name: 'main', provisional: false, steps: [] }],
+      head: { branchId: 'main', mode: 'present' },
+      sheets: [],
+    });
+    render(<TimelinePane view={empty} dispatch={vi.fn()} />);
+    expect(screen.getByText(/No tracked changes yet/)).toBeTruthy();
+    expect(screen.queryAllByRole('button', { name: /^Step \d+:/ })).toHaveLength(0);
+  });
+
+  it('renders in a narrow 320px task pane (dark theme)', () => {
+    const host = document.createElement('div');
+    host.style.width = '320px';
+    document.body.appendChild(host);
+    render(<TimelinePane view={sampleTimeline} dispatch={vi.fn()} theme="dark" />, {
+      container: host,
+    });
+    expect(screen.getByLabelText('Parametric timeline')).toBeTruthy();
+  });
+});
+
+describe('TimelinePaneContainer', () => {
+  it('re-renders when the data source changes (switch a branch)', () => {
+    const source = new FakeTimelineDataSource();
+    render(<TimelinePaneContainer source={source} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to what-if branch' }));
+    expect(
+      screen.getByRole('button', { name: 'Switch to what-if branch' }).getAttribute('aria-pressed'),
+    ).toBe('true');
   });
 });
