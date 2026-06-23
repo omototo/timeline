@@ -300,6 +300,21 @@ describe('OfficeChangeSource', () => {
     expect(reorder.newPosition).toBe(0);
   });
 
+  it('ignores the add/delete of an engine-owned preview sheet (no phantom Step)', async () => {
+    const timer = manualTimer();
+    const src = makeSource({ setTimer: timer.setTimer, clearTimer: timer.clearTimer });
+    await src.start((o) => observed.push(o));
+
+    // The add-in's own preview surface, created then torn down during a preview.
+    const preview = workbook.addSheet('__tl_preview_0a0a0a0a');
+    await workbook.worksheets.onAdded.fire({ worksheetId: preview.id, source: 'Local' });
+    await workbook.worksheets.onDeleted.fire({ worksheetId: preview.id, source: 'Local' });
+    timer.flush();
+
+    expect(observed).toHaveLength(0);
+    await src.stop();
+  });
+
   it('invokes onRemoteChange for a co-authoring (source: remote) event', async () => {
     const sheet = workbook.addSheet('Sheet1');
     const onRemoteChange = vi.fn();

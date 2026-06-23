@@ -41,6 +41,7 @@ import type {
   RequestContextLike,
 } from './office-types.ts';
 import {
+  isInternalSheetName,
   parseAddress,
   slabFromRange,
   toShiftDirection,
@@ -93,6 +94,8 @@ export class OfficeChangeSource implements ChangeSource {
   #pending: Observation[] = [];
   #flushTimer: ReturnType<typeof setTimeout> | null = null;
   #has114: boolean;
+  /** Worksheet ids of engine-owned preview surfaces, so their delete is ignored too. */
+  readonly #internalSheetIds = new Set<string>();
 
   constructor(options: OfficeChangeSourceOptions) {
     this.#run = options.run;
@@ -123,9 +126,7 @@ export class OfficeChangeSource implements ChangeSource {
       const sheets = ctx.workbook.worksheets;
       // Collection-level handlers cover sheet add/delete/rename/reorder.
       this.#registrations.push(
-        sheets.onAdded.add((args) => {
-          this.#onWorksheetAdded(args);
-        }),
+        sheets.onAdded.add((args) => this.#onWorksheetAdded(args)),
         sheets.onDeleted.add((args) => {
           this.#onWorksheetDeleted(args);
         }),
@@ -310,7 +311,15 @@ export class OfficeChangeSource implements ChangeSource {
     return shift === undefined ? base : { ...base, shiftDirection: shift };
   }
 
-  #onWorksheetAdded(args: WorksheetAddedEventArgsLike): void {
+  async #onWorksheetAdded(args: WorksheetAddedEventArgsLike): Promise<void> {
+    // Engine-owned preview surfaces are the add-in's own sheets, not user
+    // changes. Resolve the new sheet's name and, if it is internal, remember its
+    // id (so the matching delete is also ignored) and emit nothing.
+    const name = await this.#resolveSheetName(args.worksheetId);
+    if (name !== null && isInternalSheetName(name)) {
+      this.#internalSheetIds.add(args.worksheetId);
+      return;
+    }
     this.#enqueue(
       this.#worksheetObservation('add', args.worksheetId, args.source),
       args.source === 'Remote',
@@ -318,6 +327,9 @@ export class OfficeChangeSource implements ChangeSource {
   }
 
   #onWorksheetDeleted(args: WorksheetDeletedEventArgsLike): void {
+    if (this.#internalSheetIds.delete(args.worksheetId)) {
+      return;
+    }
     this.#enqueue(
       this.#worksheetObservation('delete', args.worksheetId, args.source),
       args.source === 'Remote',
@@ -325,6 +337,9 @@ export class OfficeChangeSource implements ChangeSource {
   }
 
   #onWorksheetNameChanged(args: WorksheetNameChangedEventArgsLike): void {
+    if (this.#internalSheetIds.has(args.worksheetId)) {
+      return;
+    }
     const base = this.#worksheetObservation('rename', args.worksheetId, args.source);
     const obs: WorksheetObservation =
       args.nameAfter === undefined ? base : { ...base, newName: args.nameAfter };
@@ -332,10 +347,27 @@ export class OfficeChangeSource implements ChangeSource {
   }
 
   #onWorksheetMoved(args: WorksheetPositionChangedEventArgsLike): void {
+    if (this.#internalSheetIds.has(args.worksheetId)) {
+      return;
+    }
     const base = this.#worksheetObservation('reorder', args.worksheetId, args.source);
     const obs: WorksheetObservation =
       args.positionAfter === undefined ? base : { ...base, newPosition: args.positionAfter };
     this.#enqueue(obs, args.source === 'Remote');
+  }
+
+  /** Resolve a worksheet's current name, or null if it cannot be read (e.g. gone). */
+  async #resolveSheetName(worksheetId: string): Promise<string | null> {
+    try {
+      return await this.#run(async (ctx) => {
+        const sheet = ctx.workbook.worksheets.getItem(worksheetId);
+        sheet.load('name');
+        await ctx.sync();
+        return sheet.name;
+      });
+    } catch {
+      return null;
+    }
   }
 
   #worksheetObservation(

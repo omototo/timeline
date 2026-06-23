@@ -141,6 +141,8 @@ export interface WorksheetLike {
   ): RangeLike;
   /** Make this the active worksheet (switches the user's view to it). */
   activate(): void;
+  /** Stage a load of the named properties before the next `sync()`. */
+  load(properties: string[] | string): void;
   delete(): void;
 }
 
