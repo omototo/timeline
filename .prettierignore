@@ -1,0 +1,12 @@
+node_modules
+dist
+coverage
+bun.lock
+bun.lockb
+*.local
+.DS_Store
+
+# Pre-existing authored docs — owned outside the toolchain, do not reformat.
+CONTEXT.md
+prd.md
+docs/

@@ -1,0 +1,18 @@
+{
+  "name": "@timeline/engine",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/verifi-finance/excel-parametric-timeline.git",
+    "directory": "packages/engine"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -b"
+  }
+}

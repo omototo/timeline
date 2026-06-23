@@ -1,0 +1,273 @@
+/**
+ * Timeline Engine — core types.
+ *
+ * Engine-neutral, host-agnostic shapes resolved during interface grilling
+ * (see `docs/engine-interface.md`, Q1–Q6) and the decisions of record in the
+ * ADRs (esp. ADR-0013 and ADR-0001). These types carry NO Office.js, DOM, or
+ * React dependency — the engine package stays pure.
+ */
+
+// ---------------------------------------------------------------------------
+// Geometry & cell primitives (Q2)
+// ---------------------------------------------------------------------------
+
+export type SheetId = string;
+
+export interface Rect {
+  startRow: number;
+  startCol: number;
+  rowCount: number;
+  colCount: number;
+}
+
+/** RangeAreas-aware: one logical change may span disjoint rectangles. */
+export type Area = Rect[];
+
+/** Engine-neutral scalar | rich-value JSON. */
+export type CellValue = unknown;
+
+export type ValueType = 'empty' | 'string' | 'number' | 'boolean' | 'error' | 'richValue';
+
+export interface CellSlab {
+  values: CellValue[][];
+  formulas: (string | null)[][];
+  numberFormats: string[][];
+  valueTypes: ValueType[][];
+}
+
+/** Lossless per-cell state used in Value Deltas (before/after). */
+export interface CellState {
+  value: CellValue;
+  formula: string | null;
+  valueType: ValueType;
+  numberFormat: string;
+}
+
+// ---------------------------------------------------------------------------
+// Observation — the input boundary (Q2)
+// ---------------------------------------------------------------------------
+
+export interface ObservationMeta {
+  /** ExcelApi 1.14; 'unknown' on older hosts. */
+  triggerSource: 'thisLocalAddin' | 'unknown';
+  /** Co-authoring signal. */
+  source: 'local' | 'remote';
+}
+
+export type StructuralChangeType =
+  | 'rowInserted'
+  | 'rowDeleted'
+  | 'columnInserted'
+  | 'columnDeleted'
+  | 'cellInserted'
+  | 'cellDeleted';
+
+export type ShiftDirection = 'down' | 'right' | 'up' | 'left';
+
+export type WorksheetOp = 'add' | 'delete' | 'rename' | 'reorder';
+
+export interface ValueObservation extends ObservationMeta {
+  kind: 'value';
+  sheetId: SheetId;
+  area: Area;
+  after: CellSlab;
+}
+
+export interface StructuralObservation extends ObservationMeta {
+  kind: 'structural';
+  sheetId: SheetId;
+  changeType: StructuralChangeType;
+  address: Rect;
+  /** From changeDirectionState (1.14); inferred on older hosts. */
+  shiftDirection?: ShiftDirection;
+  // no slab: a structural op is a coordinate transform, not a value change
+}
+
+export interface WorksheetObservation extends ObservationMeta {
+  kind: 'worksheet';
+  op: WorksheetOp;
+  sheetId: SheetId;
+  newName?: string; // rename
+  newPosition?: number; // reorder
+}
+
+export type Observation = ValueObservation | StructuralObservation | WorksheetObservation;
+
+// ---------------------------------------------------------------------------
+// Identity & history (Q6)
+// ---------------------------------------------------------------------------
+
+export type BranchId = string;
+
+/** Ordinal; stable (branches are append-only). */
+export interface StepRef {
+  branchId: BranchId;
+  stepIndex: number;
+}
+
+export interface Head {
+  branchId: BranchId;
+  mode: 'present' | 'preview';
+  previewStepIndex?: number;
+}
+
+export interface BranchMeta {
+  id: BranchId;
+  parentBranchId?: BranchId;
+  forkedAt?: StepRef;
+  order: number;
+  name?: string;
+  provisional: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Deltas (Q6)
+// ---------------------------------------------------------------------------
+
+export interface ValueDelta {
+  kind: 'value';
+  sheetId: SheetId;
+  cells: { addr: Rect; before: CellState; after: CellState }[];
+}
+
+export interface StructuralDelta {
+  kind: 'structural';
+  sheetId: SheetId;
+  changeType: StructuralChangeType;
+  address: Rect;
+  shiftDirection?: ShiftDirection;
+}
+
+export interface WorksheetDelta {
+  kind: 'worksheet';
+  op: WorksheetOp;
+  sheetId: SheetId;
+  newName?: string;
+  newPosition?: number;
+}
+
+/**
+ * One sheet's worth of drift reconciliation (ADR-0006), inspectable.
+ *
+ * TODO(spec): the spec references `SheetDiff` for `ReconciliationDelta.perSheet`
+ * but does not pin its shape. This is a minimal-but-sensible version: per-sheet
+ * coordinate-keyed before/after cell states, mirroring a Value Delta scoped to
+ * a single sheet plus the structural ops applied during reconciliation.
+ */
+export interface SheetDiff {
+  sheetId: SheetId;
+  cells: { addr: Rect; before: CellState; after: CellState }[];
+  structural: {
+    changeType: StructuralChangeType;
+    address: Rect;
+    shiftDirection?: ShiftDirection;
+  }[];
+}
+
+/** ADR-0006, inspectable. */
+export interface ReconciliationDelta {
+  kind: 'reconciliation';
+  perSheet: SheetDiff[];
+}
+
+export type Delta = ValueDelta | StructuralDelta | WorksheetDelta | ReconciliationDelta;
+
+// ---------------------------------------------------------------------------
+// Effects — the output boundary (Q3)
+// ---------------------------------------------------------------------------
+
+export type WriteMode = 'value' | 'formula';
+
+export type ReconcileOp =
+  | { op: 'setCells'; sheetId: SheetId; area: Area; slab: CellSlab; mode: WriteMode }
+  | {
+      op: 'applyStructural';
+      sheetId: SheetId;
+      changeType: StructuralChangeType;
+      address: Rect;
+      shiftDirection?: ShiftDirection;
+    }
+  | { op: 'createPreviewSheet'; previewSheetId: SheetId }
+  | { op: 'activateSheet'; sheetId: SheetId }
+  | { op: 'deletePreviewSheet'; previewSheetId: SheetId };
+
+export interface ReconcilePlan {
+  target: 'realSheet' | 'previewSheet';
+  ops: ReconcileOp[];
+}
+
+export type PersistOp =
+  | { op: 'appendDelta'; branchId: BranchId; delta: Delta }
+  | { op: 'writeKeyframe'; branchId: BranchId; stepIndex: number; state: unknown /* serialized */ }
+  | { op: 'setHead'; head: Head }
+  | { op: 'saveBranch'; meta: BranchMeta }
+  | { op: 'deleteBranch'; branchId: BranchId };
+
+export interface EffectEnvelope {
+  reconcile?: ReconcilePlan;
+  persist?: PersistOp[];
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle / query placeholders (referenced by the interface; not yet pinned)
+// ---------------------------------------------------------------------------
+
+/**
+ * TODO(spec): `WorkbookSnapshot` is the hashed, observed full-workbook state
+ * handed to `attach` for drift comparison. The spec references it but leaves
+ * the shape open. Minimal-but-sensible: a content hash plus per-sheet slabs.
+ */
+export interface WorkbookSnapshot {
+  workbookGuid: string;
+  /** Content hash of the observed state, used for clean-resume vs drift. */
+  contentHash: string;
+  sheets: { sheetId: SheetId; slab: CellSlab }[];
+}
+
+/**
+ * TODO(spec): `PersistedHead` is the resume payload loaded from the store and
+ * passed into `attach`. The spec references it but leaves the shape open.
+ * Minimal-but-sensible: the persisted HEAD plus the stamped tip hash.
+ */
+export interface PersistedHead {
+  head: Head;
+  tipHash: string;
+}
+
+/**
+ * TODO(spec): `TimelineQuery` filters/paginates the histogram model. The spec
+ * references it but leaves the shape open. Minimal-but-sensible: optional
+ * branch scope and an inclusive step window.
+ */
+export interface TimelineQuery {
+  branchId?: BranchId;
+  fromStepIndex?: number;
+  toStepIndex?: number;
+}
+
+/**
+ * TODO(spec): `TimelineView` is the histogram model returned by `timeline()`
+ * (steps, bar magnitudes, branch splits). The spec references it but leaves the
+ * shape open. Minimal-but-sensible version below.
+ */
+export interface TimelineView {
+  branches: BranchMeta[];
+  steps: {
+    ref: StepRef;
+    kind: Delta['kind'];
+    /** Bar magnitude for the histogram (e.g. cells touched). */
+    magnitude: number;
+  }[];
+}
+
+/**
+ * TODO(spec): `StepDetail` is the formula-text metadata returned by
+ * `inspectStep()` for Preview. The spec references it but leaves the shape open.
+ * Minimal-but-sensible version below.
+ */
+export interface StepDetail {
+  ref: StepRef;
+  kind: Delta['kind'];
+  /** Per-cell formula text for the inspect/diff UI. */
+  cells: { addr: Rect; beforeFormula: string | null; afterFormula: string | null }[];
+}

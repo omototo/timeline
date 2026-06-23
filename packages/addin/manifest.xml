@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+  xsi:type="TaskPaneApp">
+  <Id>00000000-0000-0000-0000-000000000000</Id>
+  <Version>0.0.0.0</Version>
+  <ProviderName>Timeline</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Timeline" />
+  <Description DefaultValue="Reconstruct any past sheet state." />
+  <IconUrl DefaultValue="https://localhost:9588/assets/icon-32.png" />
+  <HighResolutionIconUrl DefaultValue="https://localhost:9588/assets/icon-64.png" />
+  <SupportUrl DefaultValue="https://localhost:9588/" />
+  <AppDomains>
+    <AppDomain>https://localhost:9588</AppDomain>
+  </AppDomains>
+  <Hosts>
+    <Host Name="Workbook" />
+  </Hosts>
+  <!-- Install-time floor = 1.9 (single-cell onChanged.details fast path; structural changeType at 1.7).
+       Better APIs are runtime feature-detected via isSetSupported, NOT gated here, to keep reach wide:
+         triggerSource + changeDirectionState = ExcelApi 1.14 (echo signal + shift direction)
+         valuesAsJson lossless entity/linked types = ExcelApi 1.16
+       See docs/office-js-findings.md "requirement-set / MinVersion decision". -->
+  <Requirements>
+    <Sets DefaultMinVersion="1.9">
+      <Set Name="ExcelApi" MinVersion="1.9" />
+    </Sets>
+  </Requirements>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://localhost:9588/index.html" />
+  </DefaultSettings>
+  <Permissions>ReadWriteDocument</Permissions>
+</OfficeApp>
