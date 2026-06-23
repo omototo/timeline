@@ -139,6 +139,8 @@ export interface WorksheetLike {
     rowCount: number,
     columnCount: number,
   ): RangeLike;
+  /** Make this the active worksheet (switches the user's view to it). */
+  activate(): void;
   delete(): void;
 }
 

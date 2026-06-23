@@ -5,10 +5,35 @@ import {
   toShiftDirection,
   toInsertShift,
   toDeleteShift,
+  toExcelSheetName,
   toValueType,
   type ParsedRect,
 } from '../../src/excel/office-mapping.ts';
+import { previewSheetIdFor } from '@timeline/engine';
 import { ExpectedWriteSet } from '../../src/excel/expected-write-set.ts';
+
+describe('toExcelSheetName', () => {
+  it('passes a real sheet id through unchanged', () => {
+    expect(toExcelSheetName('{6F9619FF-8B86-D011-B42D-00CF4FC964FF}')).toBe(
+      '{6F9619FF-8B86-D011-B42D-00CF4FC964FF}',
+    );
+  });
+
+  it('folds an engine preview id into a legal, <=31-char Excel name', () => {
+    const guid = '{6F9619FF-8B86-D011-B42D-00CF4FC964FF}';
+    const name = toExcelSheetName(previewSheetIdFor(guid));
+    expect(name.length).toBeLessThanOrEqual(31);
+    expect(name).not.toMatch(/[\\/?*[\]:]/);
+  });
+
+  it('is deterministic and distinct per logical sheet', () => {
+    const a = toExcelSheetName(previewSheetIdFor('Sheet1'));
+    const b = toExcelSheetName(previewSheetIdFor('Sheet1'));
+    const c = toExcelSheetName(previewSheetIdFor('Sheet2'));
+    expect(a).toBe(b);
+    expect(a).not.toBe(c);
+  });
+});
 
 describe('parseAddress', () => {
   it('parses a single cell', () => {

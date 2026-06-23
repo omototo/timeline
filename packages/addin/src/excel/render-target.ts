@@ -20,7 +20,7 @@
 import type { CellSlab, ReconcileOp, ReconcilePlan, Rect } from '@timeline/engine';
 import type { RenderTarget } from './seams.ts';
 import type { ExcelRun, RangeLike, RequestContextLike, WorksheetLike } from './office-types.ts';
-import { toDeleteShift, toInsertShift } from './office-mapping.ts';
+import { toDeleteShift, toExcelSheetName, toInsertShift } from './office-mapping.ts';
 import type { ExpectedWriteSet } from './expected-write-set.ts';
 
 /** Convert a zero-based `Rect` to an A1 address (range or single cell). */
@@ -68,8 +68,61 @@ abstract class BaseRenderTarget implements RenderTarget {
 
   abstract reconcile(plan: ReconcilePlan): Promise<void>;
 
-  /** The mode `setCells` writes in for this surface. */
-  protected abstract resolveSheet(ctx: RequestContextLike, sheetId: string): WorksheetLike;
+  /**
+   * Resolve a worksheet from an engine sheet id. Engine preview-surface ids are
+   * folded to a legal Excel sheet name first; real sheet ids pass through.
+   */
+  protected resolveSheet(ctx: RequestContextLike, sheetId: string): WorksheetLike {
+    return ctx.workbook.worksheets.getItem(toExcelSheetName(sheetId));
+  }
+
+  /**
+   * Apply the preview-sheet lifecycle ops (create / activate / delete) carried by
+   * a plan. Both targets run these: `goto` creates and activates a preview
+   * surface, `returnToPresent` deletes the surfaces and reactivates the real
+   * sheet — and that latter plan targets `realSheet`, so the real target must
+   * honor them too.
+   */
+  protected async applyLifecycle(ops: ReconcileOp[]): Promise<void> {
+    for (const op of ops) {
+      if (op.op === 'createPreviewSheet') {
+        await this.#createPreviewSheet(op.previewSheetId);
+      } else if (op.op === 'activateSheet') {
+        await this.#activateSheet(op.sheetId);
+      } else if (op.op === 'deletePreviewSheet') {
+        await this.#deletePreviewSheet(op.previewSheetId);
+      }
+    }
+  }
+
+  /** Create the preview sheet (legal name) as `VeryHidden` until activated. */
+  #createPreviewSheet(previewSheetId: string): Promise<void> {
+    return this.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.add(toExcelSheetName(previewSheetId));
+      sheet.visibility = 'VeryHidden';
+      await ctx.sync();
+    });
+  }
+
+  /** Reveal and switch to a sheet — the engine's "land the user here" op. */
+  #activateSheet(sheetId: string): Promise<void> {
+    return this.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getItem(toExcelSheetName(sheetId));
+      sheet.visibility = 'Visible';
+      sheet.activate();
+      await ctx.sync();
+    });
+  }
+
+  #deletePreviewSheet(previewSheetId: string): Promise<void> {
+    return this.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getItemOrNullObject(toExcelSheetName(previewSheetId));
+      if (sheet.isNullObject !== true) {
+        sheet.delete();
+      }
+      await ctx.sync();
+    });
+  }
 
   /**
    * Apply value/structural ops for one sheet-resolving target. Registers every
@@ -157,12 +210,11 @@ abstract class BaseRenderTarget implements RenderTarget {
 /** Writes live formulas to the real sheet (`mode: 'formula'`). */
 export class RealSheetRenderTarget extends BaseRenderTarget {
   async reconcile(plan: ReconcilePlan): Promise<void> {
+    // `returnToPresent` routes its delete-preview / activate-real ops through a
+    // realSheet-targeted plan, so process the lifecycle here too.
+    await this.applyLifecycle(plan.ops);
     const writeOps = plan.ops.filter((op) => op.op === 'setCells' || op.op === 'applyStructural');
     await this.applyOps(writeOps);
-  }
-
-  protected resolveSheet(ctx: RequestContextLike, sheetId: string): WorksheetLike {
-    return ctx.workbook.worksheets.getItem(sheetId);
   }
 }
 
@@ -174,49 +226,10 @@ export class RealSheetRenderTarget extends BaseRenderTarget {
 export class PreviewSheetRenderTarget extends BaseRenderTarget {
   async reconcile(plan: ReconcilePlan): Promise<void> {
     // Lifecycle ops run first (a setCells may target a just-created sheet),
-    // then the value writes for the preview surface.
-    for (const op of plan.ops) {
-      if (op.op === 'createPreviewSheet') {
-        await this.#createPreviewSheet(op.previewSheetId);
-      } else if (op.op === 'activateSheet') {
-        await this.#activateSheet(op.sheetId);
-      } else if (op.op === 'deletePreviewSheet') {
-        await this.#deletePreviewSheet(op.previewSheetId);
-      }
-    }
+    // then the frozen-value writes for the preview surface.
+    await this.applyLifecycle(plan.ops);
     const writeOps = plan.ops.filter((op) => op.op === 'setCells' || op.op === 'applyStructural');
     await this.applyOps(writeOps);
-  }
-
-  /** Create the preview sheet and mark it `veryHidden` so the user can't reveal it. */
-  #createPreviewSheet(previewSheetId: string): Promise<void> {
-    return this.run(async (ctx) => {
-      const sheet = ctx.workbook.worksheets.add(previewSheetId);
-      sheet.visibility = 'VeryHidden';
-      await ctx.sync();
-    });
-  }
-
-  #activateSheet(sheetId: string): Promise<void> {
-    return this.run(async (ctx) => {
-      const sheet = ctx.workbook.worksheets.getItem(sheetId);
-      sheet.visibility = 'Visible';
-      await ctx.sync();
-    });
-  }
-
-  #deletePreviewSheet(previewSheetId: string): Promise<void> {
-    return this.run(async (ctx) => {
-      const sheet = ctx.workbook.worksheets.getItemOrNullObject(previewSheetId);
-      if (sheet.isNullObject !== true) {
-        sheet.delete();
-      }
-      await ctx.sync();
-    });
-  }
-
-  protected resolveSheet(ctx: RequestContextLike, sheetId: string): WorksheetLike {
-    return ctx.workbook.worksheets.getItem(sheetId);
   }
 }
 
