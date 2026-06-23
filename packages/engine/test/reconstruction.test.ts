@@ -177,8 +177,8 @@ describe('goto — minimal value-mode preview diff (Wave 3)', () => {
     const env = engine.goto(ref(2));
     expect(env.reconcile?.target).toBe('previewSheet');
     const ops = env.reconcile?.ops ?? [];
-    expect(ops[0]).toEqual({ op: 'createPreviewSheet', previewSheetId: '__preview__' });
-    expect(ops[1]).toEqual({ op: 'activateSheet', sheetId: '__preview__' });
+    expect(ops[0]).toEqual({ op: 'createPreviewSheet', previewSheetId: '__preview__::Sheet1' });
+    expect(ops[1]).toEqual({ op: 'activateSheet', sheetId: '__preview__::Sheet1' });
     // Every cell op is value (Frozen Values, ADR-0008).
     for (const op of setCellsOps(env)) expect(op.mode).toBe('value');
     // HEAD flipped to preview.
@@ -218,6 +218,66 @@ describe('goto — minimal value-mode preview diff (Wave 3)', () => {
     expect(setCellsOps(env)).toHaveLength(0);
   });
 
+  it('multi-sheet: projects each logical sheet onto its OWN surface (no collisions)', () => {
+    // Two populated sheets with COLLIDING coordinates: both write A1 (0,0).
+    const e = new TimelineEngineImpl({ keyframeStepInterval: 1000, keyframeByteThreshold: 1e9 });
+    e.ingest(valueObs('Sheet1', [cellRect(0, 0)], [[state({ value: 's1a1' })]])); // step 0
+    e.ingest(valueObs('Sheet2', [cellRect(0, 0)], [[state({ value: 's2a1' })]])); // step 1
+
+    const env = e.goto(ref(1)); // target: both sheets populated at A1
+    const ops = env.reconcile?.ops ?? [];
+
+    // One createPreviewSheet per logical sheet, on distinct surfaces.
+    const created = ops
+      .filter(
+        (o): o is Extract<ReconcileOp, { op: 'createPreviewSheet' }> =>
+          o.op === 'createPreviewSheet',
+      )
+      .map((o) => o.previewSheetId);
+    expect(created).toEqual(['__preview__::Sheet1', '__preview__::Sheet2']);
+    // Exactly one activateSheet, for the first surface.
+    const activated = ops.filter(
+      (o): o is Extract<ReconcileOp, { op: 'activateSheet' }> => o.op === 'activateSheet',
+    );
+    expect(activated).toEqual([{ op: 'activateSheet', sheetId: '__preview__::Sheet1' }]);
+
+    // Both A1 cells are written — to DISTINCT preview surfaces (no overwrite).
+    const cells = setCellsOps(env);
+    expect(cells).toHaveLength(2);
+    const bySurface = new Map(cells.map((c) => [c.sheetId, c.slab.values[0]?.[0]]));
+    expect(bySurface.get('__preview__::Sheet1')).toBe('s1a1');
+    expect(bySurface.get('__preview__::Sheet2')).toBe('s2a1');
+    // The two ops share the same (0,0) coordinate but never collide.
+    const coords = cells.map((c) => {
+      const rect = c.area[0];
+      expect(rect).toBeDefined();
+      return { row: rect?.startRow, col: rect?.startCol };
+    });
+    expect(coords).toEqual([
+      { row: 0, col: 0 },
+      { row: 0, col: 0 },
+    ]);
+    expect(new Set(cells.map((c) => c.sheetId)).size).toBe(2);
+  });
+
+  it('multi-sheet: a later goto only re-creates surfaces it has not seen yet', () => {
+    const e = new TimelineEngineImpl({ keyframeStepInterval: 1000, keyframeByteThreshold: 1e9 });
+    e.ingest(valueObs('Sheet1', [cellRect(0, 0)], [[state({ value: 's1' })]])); // step 0
+    e.ingest(valueObs('Sheet2', [cellRect(0, 0)], [[state({ value: 's2' })]])); // step 1
+
+    e.goto(ref(0)); // only Sheet1 populated at step 0 -> creates Sheet1 surface
+    const env = e.goto(ref(1)); // now Sheet2 also populated -> create Sheet2 only
+    const created = (env.reconcile?.ops ?? [])
+      .filter(
+        (o): o is Extract<ReconcileOp, { op: 'createPreviewSheet' }> =>
+          o.op === 'createPreviewSheet',
+      )
+      .map((o) => o.previewSheetId);
+    expect(created).toEqual(['__preview__::Sheet2']);
+    // No re-activation on a non-first surface.
+    expect((env.reconcile?.ops ?? []).some((o) => o.op === 'activateSheet')).toBe(false);
+  });
+
   it('orders same-row cell ops left-to-right (column tie-break)', () => {
     const e = new TimelineEngineImpl({ keyframeStepInterval: 1000, keyframeByteThreshold: 1e9 });
     // Two cells on the same row, written in the order C1 then B1.
@@ -243,11 +303,86 @@ describe('returnToPresent (Wave 3)', () => {
     engine.goto(ref(0));
     const env = engine.returnToPresent();
     expect(env.reconcile?.target).toBe('realSheet');
+    // Deletes the per-sheet preview surface and reactivates the REAL worksheet
+    // that was active when Preview began (Sheet1) — NOT the branch id 'main'.
     expect(env.reconcile?.ops).toEqual([
-      { op: 'deletePreviewSheet', previewSheetId: '__preview__' },
-      { op: 'activateSheet', sheetId: 'main' },
+      { op: 'deletePreviewSheet', previewSheetId: '__preview__::Sheet1' },
+      { op: 'activateSheet', sheetId: 'Sheet1' },
     ]);
     expect(engine.head()).toEqual({ branchId: 'main', mode: 'present' });
+  });
+
+  it('never reactivates a BranchId as a SheetId', () => {
+    engine.goto(ref(0));
+    const env = engine.returnToPresent();
+    const activate = (env.reconcile?.ops ?? []).find(
+      (o): o is Extract<ReconcileOp, { op: 'activateSheet' }> => o.op === 'activateSheet',
+    );
+    // The reactivated id is the REAL worksheet (Sheet1), never the branch 'main'.
+    expect(activate?.sheetId).toBe('Sheet1');
+    expect(activate?.sheetId).not.toBe('main');
+  });
+
+  it('multi-sheet: tears down every preview surface and reactivates the real sheet', () => {
+    const e = new TimelineEngineImpl();
+    e.ingest(valueObs('Sheet1', [cellRect(0, 0)], [[state({ value: 's1' })]]));
+    e.ingest(valueObs('Sheet2', [cellRect(0, 0)], [[state({ value: 's2' })]]));
+    e.goto(ref(1)); // projects both sheets onto their own surfaces
+
+    const env = e.returnToPresent();
+    expect(env.reconcile?.target).toBe('realSheet');
+    expect(env.reconcile?.ops).toEqual([
+      { op: 'deletePreviewSheet', previewSheetId: '__preview__::Sheet1' },
+      { op: 'deletePreviewSheet', previewSheetId: '__preview__::Sheet2' },
+      { op: 'activateSheet', sheetId: 'Sheet1' },
+    ]);
+  });
+
+  it('reactivates the registered sheet in tab order when sheet metadata exists', () => {
+    const e = new TimelineEngineImpl();
+    // Register two sheets (tab order Alpha, Beta) then populate the second.
+    e.ingest({
+      kind: 'worksheet',
+      op: 'add',
+      sheetId: 'Alpha',
+      triggerSource: 'thisLocalAddin',
+      source: 'local',
+    });
+    e.ingest({
+      kind: 'worksheet',
+      op: 'add',
+      sheetId: 'Beta',
+      triggerSource: 'thisLocalAddin',
+      source: 'local',
+    });
+    e.ingest(valueObs('Beta', [cellRect(0, 0)], [[state({ value: 'x' })]])); // step 2
+
+    e.goto(ref(2));
+    const env = e.returnToPresent();
+    const activate = (env.reconcile?.ops ?? []).find(
+      (o): o is Extract<ReconcileOp, { op: 'activateSheet' }> => o.op === 'activateSheet',
+    );
+    // Registered tab order wins: Alpha is first, even though Beta holds the cells.
+    expect(activate?.sheetId).toBe('Alpha');
+  });
+
+  it('omits activateSheet when no real sheet is knowable', () => {
+    const e = new TimelineEngineImpl();
+    // A structural op on an untouched sheet: records a Step but populates and
+    // registers nothing, so there is no real sheet to reactivate.
+    e.ingest({
+      kind: 'structural',
+      sheetId: 'Ghost',
+      changeType: 'rowInserted',
+      address: cellRect(0, 0),
+      triggerSource: 'thisLocalAddin',
+      source: 'local',
+    });
+    e.goto(ref(0));
+    const env = e.returnToPresent();
+    // No surfaces created (nothing populated) and no activateSheet op.
+    expect(env.reconcile?.ops).toEqual([]);
+    expect(engine.head()).toBeDefined();
   });
 
   it('is a no-op when not in preview', () => {

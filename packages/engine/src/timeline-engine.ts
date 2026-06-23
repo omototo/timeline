@@ -19,7 +19,7 @@
 import { ShadowState } from './shadow-state.ts';
 import type { ShadowSnapshot } from './shadow-state.ts';
 import { reconstruct } from './reconstruct.ts';
-import { projectionDiff } from './project.ts';
+import { previewSheetIdFor, projectionDiff } from './project.ts';
 import type { TimelineEngine } from './engine.ts';
 import type {
   BranchId,
@@ -31,6 +31,7 @@ import type {
   PersistOp,
   ReconcileOp,
   ReconcilePlan,
+  SheetId,
   StepDetail,
   StepRef,
   StructuralDelta,
@@ -45,9 +46,6 @@ import type {
 
 /** The default branch id every workbook starts on. */
 const MAIN_BRANCH: BranchId = 'main';
-
-/** The sheet id of the single Preview Sheet the engine projects onto. */
-const PREVIEW_SHEET: BranchId = '__preview__';
 
 /** Default adaptive-keyframe cadence (Q6): step count + cumulative delta bytes. */
 const DEFAULT_KEYFRAME_STEP_INTERVAL = 100;
@@ -122,11 +120,29 @@ export class TimelineEngineImpl implements TimelineEngine {
 
   // --- Navigation: currently-projected Preview state ----------------------
   /**
-   * The Shadow State the engine last projected onto the Preview Sheet, or
+   * The Shadow State the engine last projected onto the Preview surfaces, or
    * `null` when no Preview is active. `goto` diffs the target against this to
-   * produce a MINIMAL value-mode plan; `returnToPresent` clears it.
+   * produce a MINIMAL value-mode plan; `returnToPresent` clears it. This is the
+   * FULL multi-sheet target (every logical sheet), diffed per logical sheet.
    */
   #projected: ShadowState | null = null;
+
+  /**
+   * The per-sheet Preview surfaces created during the current Preview session
+   * (one per logical sheet projected so far), in creation order. `goto` adds a
+   * `createPreviewSheet` for any logical sheet not yet seen; `returnToPresent`
+   * emits a `deletePreviewSheet` for each and clears this.
+   */
+  #previewSurfaces: SheetId[] = [];
+
+  /**
+   * The real worksheet that was active when the current Preview session began,
+   * captured at first `goto`. `returnToPresent` reactivates it. `null` when the
+   * present state has no populated/known sheet to reactivate, in which case
+   * `returnToPresent` omits the `activateSheet` op and lets the shell restore
+   * the previously-active real sheet itself.
+   */
+  #activeRealSheetId: SheetId | null = null;
 
   constructor(options: TimelineEngineOptions = {}) {
     this.#keyframeStepInterval = options.keyframeStepInterval ?? DEFAULT_KEYFRAME_STEP_INTERVAL;
@@ -333,24 +349,47 @@ export class TimelineEngineImpl implements TimelineEngine {
 
   /**
    * Enter (or move within) Preview at `ref` (ADR-0008, Q3). Reconstruct the
-   * target state by forward-replay, then emit a {@link ReconcilePlan} targeting
-   * the Preview Sheet that is the MINIMAL value-mode diff between the engine's
-   * currently-projected state and the target. On first entry the plan is
-   * prefixed with `createPreviewSheet` + `activateSheet`; HEAD flips to
-   * `preview` and the projected state is tracked so a subsequent `goto`/scrub
-   * writes only what changed.
+   * target state by forward-replay, then emit a {@link ReconcilePlan} that is
+   * the MINIMAL value-mode diff between the engine's currently-projected state
+   * and the target.
+   *
+   * MULTI-SHEET (ADR-0005): each logical source sheet projects onto its OWN
+   * preview surface (`previewSheetIdFor(sheetId)`), so coordinates from
+   * different sheets never collide. The first time a given logical sheet is
+   * projected, the plan is prefixed with a `createPreviewSheet` for its surface;
+   * the very first surface created is also `activateSheet`d. HEAD flips to
+   * `preview` and the FULL multi-sheet projected state is tracked so a
+   * subsequent `goto`/scrub writes only what changed, per logical sheet.
    */
   goto(ref: StepRef): EffectEnvelope {
     const firstEntry = this.#projected === null;
+    if (firstEntry) {
+      // Capture the active real sheet so returnToPresent can reactivate it.
+      this.#activeRealSheetId = this.#presentActiveSheetId();
+    }
     const target = this.#reconstructAt(ref);
     const from = this.#projected ?? new ShadowState();
 
+    // Create any preview surface we have not created yet this session — one per
+    // logical sheet touched by either the projected `from` or the `to` target.
     const ops: ReconcileOp[] = [];
-    if (firstEntry) {
-      ops.push({ op: 'createPreviewSheet', previewSheetId: PREVIEW_SHEET });
-      ops.push({ op: 'activateSheet', sheetId: PREVIEW_SHEET });
+    const touchedSheets = new Set<SheetId>([
+      ...from.populatedSheetIds(),
+      ...target.populatedSheetIds(),
+    ]);
+    for (const sheetId of [...touchedSheets].sort()) {
+      if (!this.#previewSurfaces.includes(sheetId)) {
+        const previewSheetId = previewSheetIdFor(sheetId);
+        ops.push({ op: 'createPreviewSheet', previewSheetId });
+        // Activate the first preview surface created in this session so the
+        // shell lands the user on a visible preview sheet.
+        if (this.#previewSurfaces.length === 0) {
+          ops.push({ op: 'activateSheet', sheetId: previewSheetId });
+        }
+        this.#previewSurfaces.push(sheetId);
+      }
     }
-    ops.push(...projectionDiff(from, target, PREVIEW_SHEET));
+    ops.push(...projectionDiff(from, target));
 
     this.#projected = target;
     this.#head = { branchId: ref.branchId, mode: 'preview', previewStepIndex: ref.stepIndex };
@@ -363,26 +402,54 @@ export class TimelineEngineImpl implements TimelineEngine {
   }
 
   /**
-   * Discard the Preview Sheet and reactivate the real sheet (Q3), returning
-   * HEAD to Present. Emits a {@link ReconcilePlan} targeting the real sheet
-   * that deletes the Preview Sheet then activates the present branch's surface.
-   * A no-op (empty envelope) when not currently in Preview.
+   * The real worksheet the engine considers active in Present, used to restore
+   * focus on `returnToPresent`. Prefers a registered sheet in tab order, else
+   * the lexicographically-first populated sheet, else `null` (nothing to
+   * reactivate — the shell restores the previously-active sheet itself).
+   */
+  #presentActiveSheetId(): SheetId | null {
+    const registered = this.#shadow.sheets();
+    if (registered.length > 0 && registered[0] !== undefined) {
+      return registered[0].sheetId;
+    }
+    const populated = [...this.#shadow.populatedSheetIds()].sort();
+    return populated[0] ?? null;
+  }
+
+  /**
+   * Discard every Preview surface and reactivate the real sheet (Q3), returning
+   * HEAD to Present. Emits a {@link ReconcilePlan} targeting the real sheet that
+   * deletes each per-sheet Preview surface created this session, then activates
+   * the worksheet that was active when Preview began.
+   *
+   * The `activateSheet` op carries a REAL {@link SheetId} (the active sheet
+   * captured at `goto`-time), never a {@link BranchId} — branch ids and sheet
+   * ids are distinct namespaces. If no active real sheet was knowable, the
+   * `activateSheet` op is omitted and the shell restores the previously-active
+   * sheet itself. A no-op (empty envelope) when not currently in Preview.
    */
   returnToPresent(): EffectEnvelope {
     if (this.#projected === null || this.#head.mode !== 'preview') {
       return {};
     }
     const branchId = this.#head.branchId;
+    const surfaces = this.#previewSurfaces;
+    const activeRealSheetId = this.#activeRealSheetId;
+
     this.#projected = null;
+    this.#previewSurfaces = [];
+    this.#activeRealSheetId = null;
     this.#head = { branchId, mode: 'present' };
 
-    const reconcile: ReconcilePlan = {
-      target: 'realSheet',
-      ops: [
-        { op: 'deletePreviewSheet', previewSheetId: PREVIEW_SHEET },
-        { op: 'activateSheet', sheetId: branchId },
-      ],
-    };
+    const ops: ReconcileOp[] = surfaces.map((sheetId) => ({
+      op: 'deletePreviewSheet',
+      previewSheetId: previewSheetIdFor(sheetId),
+    }));
+    if (activeRealSheetId !== null) {
+      ops.push({ op: 'activateSheet', sheetId: activeRealSheetId });
+    }
+
+    const reconcile: ReconcilePlan = { target: 'realSheet', ops };
     return {
       reconcile,
       persist: [{ op: 'setHead', head: this.head() }],

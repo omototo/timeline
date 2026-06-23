@@ -26,6 +26,19 @@ function key(row: number, col: number): string {
 }
 
 /**
+ * The prefix every per-sheet Preview surface id carries. A logical source sheet
+ * `Sheet1` projects onto `__preview__::Sheet1`, keeping each sheet's coordinate
+ * space distinct (ADR-0005, multi-sheet history) while staying recognizably a
+ * preview surface for the shell.
+ */
+export const PREVIEW_SHEET_PREFIX = '__preview__::';
+
+/** Derive the per-sheet Preview surface id for a logical source `sheetId`. */
+export function previewSheetIdFor(sheetId: SheetId): SheetId {
+  return `${PREVIEW_SHEET_PREFIX}${sheetId}`;
+}
+
+/**
  * Per-sheet minimal cell diff: every coordinate whose state differs between the
  * currently-projected `from` state and the `to` target. A cell present in
  * `from` but absent (empty) in `to` is emitted as a clear (target = empty cell)
@@ -75,20 +88,19 @@ function singleCellSlab(state: CellState): CellSlab {
  * state. One op per changed cell (a single-cell area + 1×1 slab) — minimal and
  * unambiguous; the shell can coalesce adjacent cells if it chooses.
  *
- * Targets the Preview Sheet conceptually: the caller stamps the actual
- * `sheetId` (the Preview Sheet's id) onto each op. We diff *logical* sheets
- * here but emit against the single preview surface, so the `previewSheetId`
- * argument overrides the source sheet id on every op.
+ * MULTI-SHEET (ADR-0005): history is workbook-scoped. Each *logical* source
+ * sheet is projected onto its **own** preview surface, whose id is derived from
+ * the source sheet id by `previewSheetIdFor`. The diff is computed per logical
+ * sheet and each op carries the per-sheet preview id, so coordinates from
+ * different logical sheets never collide on a single flat surface (e.g.
+ * `Sheet1!A1` and `Sheet2!A1` land on distinct preview sheets).
  */
-export function projectionDiff(
-  from: ShadowState,
-  to: ShadowState,
-  previewSheetId: SheetId,
-): ReconcileOp[] {
+export function projectionDiff(from: ShadowState, to: ShadowState): ReconcileOp[] {
   const sheetIds = new Set<SheetId>([...from.populatedSheetIds(), ...to.populatedSheetIds()]);
   const ops: ReconcileOp[] = [];
   // Deterministic sheet order.
   for (const sheetId of [...sheetIds].sort()) {
+    const previewSheetId = previewSheetIdFor(sheetId);
     for (const change of sheetCellChanges(from, to, sheetId)) {
       ops.push({
         op: 'setCells',
