@@ -60,7 +60,7 @@ does.
 1. Install and trust the Office dev certificate:
 
    ```sh
-   bun run --filter @timeline/addin certs
+   bun run certs
    ```
 
    The OS will prompt you to trust the certificate — **accept the prompt**. This
@@ -71,18 +71,18 @@ does.
 2. Sideload in Excel desktop:
 
    ```sh
-   bun run --filter @timeline/addin sideload
+   bun run sideload
    ```
 
    This starts the HTTPS Vite dev server on port 9588 and opens Excel desktop
-   with the add-in loaded. Use `bun run --filter @timeline/addin start` when you
-   want the Office debugging session, and `bun run --filter @timeline/addin stop`
+   with the add-in loaded. Use `bun run start` when you
+   want the Office debugging session, and `bun run stop`
    to remove the sideloaded add-in registration when finished.
 
 3. Run the pane in a plain browser or prepare Excel on the web:
 
    ```sh
-   bun run --filter @timeline/addin dev
+   bun run dev
    ```
 
 4. Sideload in Excel on the web:
