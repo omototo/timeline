@@ -66,6 +66,11 @@ export class RealTimelineDataSource implements TimelineDataSource {
   // changes — recomputing a fresh view every call drives an infinite render
   // loop. Cache the snapshot and invalidate it only when state actually changes.
   #view: TimelineView | null = null;
+  // Effects (Excel reconciles) MUST apply in dispatch order: a fast scrub fires
+  // many gotos, and goto N's createPreviewSheet must finish before goto N+1's
+  // setCells reads it — otherwise Excel throws "the requested resource does not
+  // exist". Serialize every #apply through this tail promise.
+  #applyTail: Promise<void> = Promise.resolve();
 
   constructor(options: RealTimelineDataSourceOptions) {
     this.#engine = options.engine;
@@ -89,7 +94,7 @@ export class RealTimelineDataSource implements TimelineDataSource {
     await this.#changeSource.start((obs: Observation) => {
       const envelope = this.#engine.ingest(obs);
       this.#emit();
-      void this.#apply(envelope);
+      this.#enqueueApply(envelope);
     });
     this.#emit();
   }
@@ -116,8 +121,13 @@ export class RealTimelineDataSource implements TimelineDataSource {
     // the UI now; the Excel write (reconcile) settles asynchronously after.
     this.#emit();
     if (envelope) {
-      void this.#apply(envelope);
+      this.#enqueueApply(envelope);
     }
+  }
+
+  /** Chain an effect onto the serial apply queue so reconciles never overlap. */
+  #enqueueApply(envelope: EffectEnvelope): void {
+    this.#applyTail = this.#applyTail.then(() => this.#apply(envelope));
   }
 
   #route(command: TimelineCommand): EffectEnvelope | null {
