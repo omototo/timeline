@@ -75,7 +75,13 @@ export { applyDelta, reconstruct } from './reconstruct.ts';
 
 // Projection diff — engine-side minimal ReconcilePlan diff (Wave 3).
 // Multi-sheet: one Preview surface per logical sheet (ADR-0005).
-export { PREVIEW_SHEET_PREFIX, previewSheetIdFor, projectionDiff } from './project.ts';
+// `realSheetDiff` is the formula-mode live counterpart used by `switch` (Wave 4).
+export {
+  PREVIEW_SHEET_PREFIX,
+  previewSheetIdFor,
+  projectionDiff,
+  realSheetDiff,
+} from './project.ts';
 
 // Persistence-seam ports.
 export type { HistoryStore, WorkbookStamp, WorkbookStampData } from './ports.ts';

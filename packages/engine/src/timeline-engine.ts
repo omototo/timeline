@@ -16,13 +16,16 @@
  *
  * Pure: no Office.js, DOM, or React.
  */
-import { ShadowState } from './shadow-state.ts';
+import { ShadowState, EMPTY_CELL, cellStateEquals } from './shadow-state.ts';
 import type { ShadowSnapshot } from './shadow-state.ts';
 import { reconstruct } from './reconstruct.ts';
-import { previewSheetIdFor, projectionDiff } from './project.ts';
+import { previewSheetIdFor, projectionDiff, realSheetDiff } from './project.ts';
 import type { TimelineEngine } from './engine.ts';
 import type {
   BranchId,
+  BranchMeta,
+  CellSlab,
+  CellState,
   Delta,
   EffectEnvelope,
   Head,
@@ -31,6 +34,9 @@ import type {
   PersistOp,
   ReconcileOp,
   ReconcilePlan,
+  ReconciliationDelta,
+  Rect,
+  SheetDiff,
   SheetId,
   StepDetail,
   StepRef,
@@ -50,6 +56,14 @@ const MAIN_BRANCH: BranchId = 'main';
 /** Default adaptive-keyframe cadence (Q6): step count + cumulative delta bytes. */
 const DEFAULT_KEYFRAME_STEP_INTERVAL = 100;
 const DEFAULT_KEYFRAME_BYTE_THRESHOLD = 64 * 1024;
+
+/**
+ * The stepIndex of a branch's BASE keyframe — the seed state captured at a fork
+ * point, before the branch records its first Step (which is index 0). A
+ * negative index keeps it strictly below every real step so `keyframeAtOrBefore`
+ * picks it up for any target ≥ 0 but it never collides with a recorded Step.
+ */
+const BASE_KEYFRAME_INDEX = -1;
 
 /**
  * Engine construction options. The adaptive keyframe cadence is configurable
@@ -91,32 +105,65 @@ interface Step {
 }
 
 /**
- * Diagnostic raised when an Observation arrives while HEAD is in Preview mode.
- * The shell must lock the real sheet during Preview; if one slips through, the
- * engine refuses it (no-op envelope) and records why.
+ * Diagnostic raised when an operation is refused by the engine's state machine
+ * (returns a no-op envelope, never corrupts state). Wave 1 carried the
+ * `ingest`-in-Preview and `unsupportedKind` codes; Wave 4 adds:
+ *
+ * - `ingestSuspended` — an Observation arrived while tracking is suspended for
+ *   co-authoring (`detachToCoauthoring`, ADR-0006). Ingest is a no-op until the
+ *   engine re-attaches.
+ * - `coauthoringSuspended` — emitted by `detachToCoauthoring` itself to tell the
+ *   shell tracking has been disabled (a `source: 'remote'` edit was seen).
  */
 export interface IngestDiagnostic {
-  code: 'ingestInPreview' | 'unsupportedKind';
+  code: 'ingestInPreview' | 'unsupportedKind' | 'ingestSuspended' | 'coauthoringSuspended';
   message: string;
 }
 
 export class TimelineEngineImpl implements TimelineEngine {
-  readonly #shadow = new ShadowState();
+  #shadow = new ShadowState();
   /** Per-branch append-only Step log (resident; deltas are small — ADR-0007). */
   readonly #log = new Map<BranchId, Step[]>();
   #head: Head = { branchId: MAIN_BRANCH, mode: 'present' };
   /** Last diagnostic from a refused/no-op `ingest`, for the shell to surface. */
   #lastDiagnostic: IngestDiagnostic | null = null;
 
+  // --- Branching & lifecycle (Wave 4) -------------------------------------
+  /**
+   * Per-branch metadata (ADR-0005). `main` is implicit and non-provisional; it
+   * is registered lazily (a fork records its parent, so `main` must exist as a
+   * `BranchMeta` once any branch is created). A PROVISIONAL branch (from
+   * `branch`) is held resident but NOT persisted until its first `ingest`
+   * (`saveBranch`), and is garbage-collected if `switch`-ed away from before it
+   * records a Step (ADR-0005 — provisional branches are cheap, disposable forks).
+   */
+  readonly #branches = new Map<BranchId, BranchMeta>();
+  /** Monotonic counter assigning each new branch its tab `order`. */
+  #branchOrder = 0;
+  /**
+   * Branch ids whose `saveBranch` has been emitted. A provisional branch is
+   * persisted lazily on its first ingest; tracking this avoids re-emitting
+   * `saveBranch` on every subsequent Step.
+   */
+  readonly #persistedBranches = new Set<BranchId>();
+  /**
+   * Tracking suspended for co-authoring (ADR-0006). Set by
+   * `detachToCoauthoring`; while true, `ingest` is a no-op + diagnostic. Cleared
+   * by a clean `attach`.
+   */
+  #suspended = false;
+  /** Monotonic counter behind the deterministic minted branch ids. */
+  #branchSeq = 0;
+
   // --- Adaptive keyframe cadence (Q6) -------------------------------------
   readonly #keyframeStepInterval: number;
   readonly #keyframeByteThreshold: number;
-  /** Per-branch resident keyframes (single branch for now), step-ascending. */
+  /** Per-branch resident keyframes, step-ascending. */
   readonly #keyframes = new Map<BranchId, Keyframe[]>();
-  /** Steps appended on the current branch since its last keyframe. */
-  #stepsSinceKeyframe = 0;
-  /** Cumulative delta bytes appended since the last keyframe. */
-  #bytesSinceKeyframe = 0;
+  /** Per-branch steps appended since that branch's last keyframe. */
+  readonly #stepsSinceKeyframe = new Map<BranchId, number>();
+  /** Per-branch cumulative delta bytes appended since its last keyframe. */
+  readonly #bytesSinceKeyframe = new Map<BranchId, number>();
 
   // --- Navigation: currently-projected Preview state ----------------------
   /**
@@ -155,6 +202,16 @@ export class TimelineEngineImpl implements TimelineEngine {
 
   ingest(obs: Observation): EffectEnvelope {
     this.#lastDiagnostic = null;
+
+    // Suspended for co-authoring (ADR-0006): tracking is disabled until a clean
+    // re-attach. Every Observation is a no-op while suspended.
+    if (this.#suspended) {
+      this.#lastDiagnostic = {
+        code: 'ingestSuspended',
+        message: 'Tracking is suspended for co-authoring; ingest is a no-op until re-attach.',
+      };
+      return {};
+    }
 
     // Present-only: an Observation in Preview is refused (shell must lock the
     // real sheet during Preview). No Step, empty envelope.
@@ -239,6 +296,10 @@ export class TimelineEngineImpl implements TimelineEngine {
    * the Shadow State forward, and return the Present-mode envelope
    * (`appendDelta` + `setHead`, no reconcile — the user already performed the
    * change in the live workbook).
+   *
+   * A PROVISIONAL branch persists lazily (ADR-0005): its `saveBranch` PersistOp
+   * is prepended to the envelope on its FIRST recorded Step, not at `branch()`
+   * time — a fork that is abandoned before any edit never touches the store.
    */
   #recordStep(delta: Delta, applyToShadow: () => void): EffectEnvelope {
     const branchId = this.#head.branchId;
@@ -246,29 +307,71 @@ export class TimelineEngineImpl implements TimelineEngine {
     this.#appendStep(branchId, { stepIndex, delta });
     applyToShadow();
 
-    const persist: PersistOp[] = [
-      { op: 'appendDelta', branchId, delta },
-      { op: 'setHead', head: this.head() },
-    ];
+    const persist: PersistOp[] = [];
+
+    // First Step on a not-yet-persisted branch: persist its BranchMeta now. A
+    // provisional fork promotes to a real, saved branch on first edit.
+    const saveBranchOp = this.#saveBranchOnFirstStep(branchId);
+    if (saveBranchOp !== null) persist.push(saveBranchOp);
+
+    persist.push({ op: 'appendDelta', branchId, delta }, { op: 'setHead', head: this.head() });
 
     // Adaptive keyframe cadence (Q6): account this Step's cost, then — if EITHER
     // the step-count OR the byte threshold is crossed — snapshot the Shadow
     // State (now at `stepIndex`) and emit a writeKeyframe op. The snapshot is
     // also kept resident so reconstruction can replay forward from it.
-    this.#stepsSinceKeyframe += 1;
-    this.#bytesSinceKeyframe += deltaBytes(delta);
-    if (
-      this.#stepsSinceKeyframe >= this.#keyframeStepInterval ||
-      this.#bytesSinceKeyframe >= this.#keyframeByteThreshold
-    ) {
+    const steps = (this.#stepsSinceKeyframe.get(branchId) ?? 0) + 1;
+    const bytes = (this.#bytesSinceKeyframe.get(branchId) ?? 0) + deltaBytes(delta);
+    if (steps >= this.#keyframeStepInterval || bytes >= this.#keyframeByteThreshold) {
       const snapshot = this.#shadow.snapshot();
       this.#storeKeyframe(branchId, { stepIndex, snapshot });
-      this.#stepsSinceKeyframe = 0;
-      this.#bytesSinceKeyframe = 0;
+      this.#stepsSinceKeyframe.set(branchId, 0);
+      this.#bytesSinceKeyframe.set(branchId, 0);
       persist.push({ op: 'writeKeyframe', branchId, stepIndex, state: snapshot });
+    } else {
+      this.#stepsSinceKeyframe.set(branchId, steps);
+      this.#bytesSinceKeyframe.set(branchId, bytes);
     }
 
     return { persist };
+  }
+
+  /**
+   * Return the `saveBranch` PersistOp to emit on a branch's first Step, or null
+   * if there is nothing to persist. The implicit `main` root is NOT a saved
+   * `BranchMeta` — it always exists, so `main`'s first Step emits no
+   * `saveBranch`. A PROVISIONAL fork, by contrast, persists lazily on its first
+   * Step (ADR-0005): we emit its `saveBranch` once and mark it persisted +
+   * non-provisional so subsequent Steps do not re-emit.
+   */
+  #saveBranchOnFirstStep(branchId: BranchId): Extract<PersistOp, { op: 'saveBranch' }> | null {
+    if (branchId === MAIN_BRANCH) return null;
+    if (this.#persistedBranches.has(branchId)) return null;
+    const meta = this.#branches.get(branchId);
+    if (meta === undefined) return null;
+    this.#persistedBranches.add(branchId);
+    // The branch is no longer provisional once it is persisted.
+    const persistedMeta: BranchMeta = { ...meta, provisional: false };
+    this.#branches.set(branchId, persistedMeta);
+    return { op: 'saveBranch', meta: persistedMeta };
+  }
+
+  /**
+   * The {@link BranchMeta} for a branch, registering implicit `main` lazily.
+   * `main` is the workbook's root branch (non-provisional, order 0); it has no
+   * `BranchMeta` until something needs one (a fork records `main` as a parent,
+   * or `main`'s first Step persists it).
+   */
+  #branchMeta(branchId: BranchId): BranchMeta | null {
+    const existing = this.#branches.get(branchId);
+    if (existing !== undefined) return existing;
+    if (branchId === MAIN_BRANCH) {
+      const meta: BranchMeta = { id: MAIN_BRANCH, order: 0, provisional: false };
+      this.#branches.set(MAIN_BRANCH, meta);
+      this.#branchOrder = Math.max(this.#branchOrder, 1);
+      return meta;
+    }
+    return null;
   }
 
   /** Append a keyframe to the branch's resident, step-ascending keyframe list. */
@@ -336,15 +439,132 @@ export class TimelineEngineImpl implements TimelineEngine {
   }
 
   // -------------------------------------------------------------------------
-  // Lifecycle / navigation — not in Wave 1 scope
+  // Lifecycle (Wave 4)
   // -------------------------------------------------------------------------
 
-  attach(_observed: WorkbookSnapshot, _persisted: PersistedHead | null): EffectEnvelope {
-    throw new Error('TimelineEngineImpl.attach is not implemented in Wave 1.');
+  /**
+   * Attach to a workbook on launch / pane-open (ADR-0006). Hash the observed
+   * live state and compare it to the persisted Tip hash:
+   *
+   * - **No persisted head** — a fresh workbook. Seed the Shadow State from the
+   *   observed slabs (so future ingests diff against real content), restore
+   *   nothing, empty reconcile.
+   * - **Clean match** (`observed.contentHash === persisted.tipHash`) — the
+   *   workbook is exactly where history left it. Restore HEAD from the persisted
+   *   head, resume tracking, empty reconcile (no writes — the live state already
+   *   equals the tip).
+   * - **Drift** — the workbook changed behind the engine's back. Compute an
+   *   itemized, per-sheet before/after {@link ReconciliationDelta} (the engine's
+   *   Shadow State is "before"; the observed slabs are "after"), append it as a
+   *   single inspectable **Reconciliation Step** (ADR-0006), advance the Shadow
+   *   State to the observed state, and restore HEAD. We capture WHAT changed,
+   *   not the sequence of untracked edits. Empty reconcile (no write-back — the
+   *   user's current work is authoritative; pre-drift history stays previewable).
+   *
+   * A successful attach always clears any co-authoring suspension — re-attaching
+   * resumes tracking.
+   */
+  attach(observed: WorkbookSnapshot, persisted: PersistedHead | null): EffectEnvelope {
+    this.#lastDiagnostic = null;
+    this.#suspended = false;
+
+    if (persisted === null) {
+      // Fresh workbook: seed the mirror from the observed content; no Step.
+      this.#shadow = snapshotToShadow(observed);
+      return {};
+    }
+
+    if (observed.contentHash === persisted.tipHash) {
+      // Clean resume: restore HEAD, no writes.
+      this.#head = restoreHead(persisted.head);
+      return { persist: [{ op: 'setHead', head: this.head() }] };
+    }
+
+    // Drift: build the itemized per-sheet diff (Shadow "before" vs observed
+    // "after"), append it as a Reconciliation Step, and advance the mirror.
+    const perSheet = this.#computeDriftDiff(observed);
+    const delta: ReconciliationDelta = { kind: 'reconciliation', perSheet };
+    this.#head = restoreHead(persisted.head);
+    const envelope = this.#recordStep(delta, () => {
+      this.#shadow = snapshotToShadow(observed);
+    });
+    return envelope;
   }
 
+  /**
+   * Compute the per-sheet reconciliation diff between the engine's Shadow State
+   * (the "before" the engine last witnessed) and the observed live workbook
+   * (the "after"), over the union of sheets present in either. Only cells that
+   * actually changed are recorded; a sheet with no changes is omitted. Value
+   * changes only — drift reconciliation captures content, not the untracked
+   * coordinate moves that produced it (ADR-0006).
+   */
+  #computeDriftDiff(observed: WorkbookSnapshot): SheetDiff[] {
+    const observedById = new Map(observed.sheets.map((s) => [s.sheetId, s.slab]));
+    const sheetIds = new Set<SheetId>([
+      ...this.#shadow.populatedSheetIds(),
+      ...observed.sheets.map((s) => s.sheetId),
+    ]);
+
+    const perSheet: SheetDiff[] = [];
+    for (const sheetId of [...sheetIds].sort()) {
+      const after = observedById.get(sheetId);
+      const cells = this.#sheetDriftCells(sheetId, after);
+      if (cells.length > 0) {
+        perSheet.push({ sheetId, cells, structural: [] });
+      }
+    }
+    return perSheet;
+  }
+
+  /**
+   * Per-sheet drift cells: compare every coordinate populated in either the
+   * Shadow State or the observed slab, recording `{ addr, before, after }` for
+   * those that differ. A coordinate present in the slab is read from it; a
+   * coordinate only in the Shadow State is now empty (it was cleared by the
+   * untracked edits).
+   */
+  #sheetDriftCells(
+    sheetId: SheetId,
+    afterSlab: CellSlab | undefined,
+  ): { addr: Rect; before: CellState; after: CellState }[] {
+    const before = new Map<string, CellState>();
+    for (const c of this.#shadow.cells(sheetId)) {
+      before.set(`${String(c.row)},${String(c.col)}`, c.state);
+    }
+    const after = afterSlab === undefined ? new Map<string, CellState>() : slabToCellMap(afterSlab);
+
+    const coords = new Set<string>([...before.keys(), ...after.keys()]);
+    const out: { addr: Rect; before: CellState; after: CellState }[] = [];
+    for (const coord of [...coords].sort(byRowMajor)) {
+      const beforeState = before.get(coord) ?? { ...EMPTY_CELL };
+      const afterState = after.get(coord) ?? { ...EMPTY_CELL };
+      if (!cellStateEquals(beforeState, afterState)) {
+        const [row, col] = coord.split(',').map(Number) as [number, number];
+        out.push({
+          addr: { startRow: row, startCol: col, rowCount: 1, colCount: 1 },
+          before: beforeState,
+          after: afterState,
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Suspend tracking for co-authoring (ADR-0006). A `source: 'remote'` edit
+   * means the file is shared; branching history + multi-author merge are two
+   * products, so v1 disables tracking with a clear diagnostic rather than
+   * corrupting state. Subsequent `ingest` calls are no-ops until a clean
+   * `attach` resumes tracking. NOT a Step (no history mutation).
+   */
   detachToCoauthoring(): EffectEnvelope {
-    throw new Error('TimelineEngineImpl.detachToCoauthoring is not implemented in Wave 1.');
+    this.#suspended = true;
+    this.#lastDiagnostic = {
+      code: 'coauthoringSuspended',
+      message: 'Co-authoring detected (source: remote); tracking suspended for this session.',
+    };
+    return {};
   }
 
   /**
@@ -456,12 +676,148 @@ export class TimelineEngineImpl implements TimelineEngine {
     };
   }
 
-  branch(_from: StepRef): EffectEnvelope {
-    throw new Error('TimelineEngineImpl.branch is not implemented in Wave 1.');
+  /**
+   * "Branch from here" (ADR-0005): fork a new PROVISIONAL branch at `from` and
+   * promote it to an editable Present (HEAD → the new branch tip).
+   *
+   * The fork's state is reconstructed at `from` by forward-replay and seeded as
+   * a base keyframe (at stepIndex −1) on the new branch, so the new branch's own
+   * reconstruction/replay starts from the fork point. The Shadow State becomes
+   * that reconstructed state immediately (the user edits the fork live). HEAD
+   * flips to the new branch in `present`.
+   *
+   * Provisional means NOT yet persisted: `branch()` emits NO `saveBranch` (only
+   * a `setHead`). The branch persists lazily on its first `ingest` (ADR-0005),
+   * or is garbage-collected if `switch`-ed away from before recording a Step.
+   * If a Preview is active, it is implicitly returned to Present first (a fork
+   * is a Present operation).
+   */
+  branch(from: StepRef): EffectEnvelope {
+    // A fork is a Present op; abandon any active Preview projection silently.
+    this.#clearPreview();
+
+    // Ensure the parent branch is registered so the fork records a real parent.
+    const parentMeta = this.#branchMeta(from.branchId);
+    const parentId = parentMeta?.id ?? from.branchId;
+
+    const newBranchId = this.#mintBranchId();
+    const order = this.#branchOrder++;
+    const meta: BranchMeta = {
+      id: newBranchId,
+      parentBranchId: parentId,
+      forkedAt: { branchId: from.branchId, stepIndex: from.stepIndex },
+      order,
+      provisional: true,
+    };
+    this.#branches.set(newBranchId, meta);
+
+    // Reconstruct the fork point and seed it as the new branch's base keyframe
+    // (stepIndex −1: the state before the branch's first Step) so replay on the
+    // new branch starts from the fork.
+    const forkState = this.#reconstructAt(from);
+    this.#log.set(newBranchId, []);
+    this.#storeKeyframe(newBranchId, {
+      stepIndex: BASE_KEYFRAME_INDEX,
+      snapshot: forkState.snapshot(),
+    });
+    this.#stepsSinceKeyframe.set(newBranchId, 0);
+    this.#bytesSinceKeyframe.set(newBranchId, 0);
+
+    this.#shadow = forkState;
+    this.#head = { branchId: newBranchId, mode: 'present' };
+
+    return { persist: [{ op: 'setHead', head: this.head() }] };
   }
 
-  switch(_branch: BranchId): EffectEnvelope {
-    throw new Error('TimelineEngineImpl.switch is not implemented in Wave 1.');
+  /**
+   * Checkout another branch's tip (ADR-0005). NAVIGATION, not a Step: it
+   * reconstructs the target branch's tip state, makes it the live Shadow State,
+   * and emits a `formula`-mode {@link ReconcilePlan} onto `realSheet` (live —
+   * Present is editable, so the diff writes formulas, not frozen values). HEAD
+   * flips to the target in `present`. Never appends a delta.
+   *
+   * PROVISIONAL GC (ADR-0005): if we are switching AWAY from a provisional
+   * branch that has recorded zero Steps, it is discarded — the branch + its
+   * resident log/keyframes are dropped and a `deleteBranch` PersistOp is
+   * emitted. A no-op (empty envelope) when the target is already the current
+   * branch in Present.
+   */
+  switch(branch: BranchId): EffectEnvelope {
+    // A switch is a Present op; abandon any active Preview projection first.
+    this.#clearPreview();
+
+    const fromBranchId = this.#head.branchId;
+    if (branch === fromBranchId) {
+      // Already on this branch in Present: nothing to do.
+      return {};
+    }
+
+    const persist: PersistOp[] = [];
+
+    // Provisional GC: discard a zero-Step provisional branch we are leaving.
+    const gcOp = this.#gcProvisionalBranch(fromBranchId);
+    if (gcOp !== null) persist.push(gcOp);
+
+    // Reconstruct the target tip and diff the live sheets onto it (formula mode).
+    const from = this.#shadow;
+    const target = this.#reconstructTip(branch);
+    const ops = realSheetDiff(from, target);
+
+    this.#shadow = target;
+    this.#head = { branchId: branch, mode: 'present' };
+
+    persist.push({ op: 'setHead', head: this.head() });
+    return { reconcile: { target: 'realSheet', ops }, persist };
+  }
+
+  /**
+   * If `branchId` is a PROVISIONAL branch with zero recorded Steps, drop its
+   * resident state (log, keyframes, cadence counters, meta) and return the
+   * `deleteBranch` PersistOp to emit; otherwise null. Used by `switch` to GC a
+   * fork abandoned before its first edit.
+   */
+  #gcProvisionalBranch(branchId: BranchId): Extract<PersistOp, { op: 'deleteBranch' }> | null {
+    const meta = this.#branches.get(branchId);
+    if (!meta?.provisional) return null;
+    if ((this.#log.get(branchId)?.length ?? 0) > 0) return null; // has Steps: keep
+    this.#branches.delete(branchId);
+    this.#log.delete(branchId);
+    this.#keyframes.delete(branchId);
+    this.#stepsSinceKeyframe.delete(branchId);
+    this.#bytesSinceKeyframe.delete(branchId);
+    this.#persistedBranches.delete(branchId);
+    return { op: 'deleteBranch', branchId };
+  }
+
+  /** Reconstruct a branch's TIP state by forward-replay from its last keyframe. */
+  #reconstructTip(branchId: BranchId): ShadowState {
+    const tip = this.#nextStepIndex(branchId) - 1;
+    if (tip < 0) {
+      // No Steps: seed from the branch's base keyframe if present, else empty.
+      const base = this.#keyframeAtOrBefore(branchId, BASE_KEYFRAME_INDEX);
+      return base === null ? new ShadowState() : ShadowState.fromSnapshot(base.snapshot);
+    }
+    return this.#reconstructAt({ branchId, stepIndex: tip });
+  }
+
+  /**
+   * Tear down any active Preview projection WITHOUT emitting effects (internal).
+   * Used by `branch`/`switch`, which are Present operations: they leave Preview
+   * implicitly. The shell will overwrite the surfaces via the new plan; the
+   * Preview surfaces themselves are the shell's concern on a mode switch.
+   */
+  #clearPreview(): void {
+    this.#projected = null;
+    this.#previewSurfaces = [];
+    this.#activeRealSheetId = null;
+    if (this.#head.mode === 'preview') {
+      this.#head = { branchId: this.#head.branchId, mode: 'present' };
+    }
+  }
+
+  /** Mint the next deterministic branch id (`branch-1`, `branch-2`, …). */
+  #mintBranchId(): BranchId {
+    return `branch-${String(++this.#branchSeq)}`;
   }
 
   // -------------------------------------------------------------------------
@@ -530,6 +886,26 @@ export class TimelineEngineImpl implements TimelineEngine {
     return this.#reconstructAt(ref).read(sheetId, row, col);
   }
 
+  /**
+   * The {@link BranchMeta} of every branch the engine knows (resident),
+   * tab-order ascending (defensive copies). Additive query (Wave 4) — lets the
+   * shell/tests inspect the branch graph (fork points, provisional flags)
+   * without exposing internals.
+   */
+  branches(): BranchMeta[] {
+    return [...this.#branches.values()].sort((a, b) => a.order - b.order).map((m) => ({ ...m }));
+  }
+
+  /** Whether a branch is currently held resident (not GC'd). Additive query. */
+  hasBranch(branchId: BranchId): boolean {
+    return this.#branches.has(branchId);
+  }
+
+  /** Whether tracking is suspended for co-authoring (ADR-0006). Additive query. */
+  isSuspended(): boolean {
+    return this.#suspended;
+  }
+
   // -------------------------------------------------------------------------
   // Internals
   // -------------------------------------------------------------------------
@@ -546,4 +922,75 @@ export class TimelineEngineImpl implements TimelineEngine {
       log.push(step);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Module-level helpers (Wave 4 lifecycle)
+// ---------------------------------------------------------------------------
+
+/** Restore a persisted {@link Head}, defensively normalized (omit preview index when absent). */
+function restoreHead(head: Head): Head {
+  return head.mode === 'preview' && head.previewStepIndex !== undefined
+    ? { branchId: head.branchId, mode: 'preview', previewStepIndex: head.previewStepIndex }
+    : { branchId: head.branchId, mode: head.mode };
+}
+
+/**
+ * Seed a fresh {@link ShadowState} from an observed {@link WorkbookSnapshot} —
+ * every non-empty cell of every observed sheet slab. Used by `attach` to align
+ * the mirror with the live workbook (fresh open, or after drift reconciliation).
+ */
+function snapshotToShadow(observed: WorkbookSnapshot): ShadowState {
+  const state = new ShadowState();
+  for (const sheet of observed.sheets) {
+    const cells = slabToCellMap(sheet.slab);
+    const valueCells: ValueDelta['cells'] = [];
+    for (const [coord, cellState] of cells) {
+      const [row, col] = coord.split(',').map(Number) as [number, number];
+      valueCells.push({
+        addr: { startRow: row, startCol: col, rowCount: 1, colCount: 1 },
+        before: { ...EMPTY_CELL },
+        after: cellState,
+      });
+    }
+    if (valueCells.length > 0) {
+      state.apply({ kind: 'value', sheetId: sheet.sheetId, cells: valueCells });
+    }
+  }
+  return state;
+}
+
+/**
+ * Flatten a {@link CellSlab} (anchored at A1, row-major) into a `"row,col" ->
+ * CellState` map, dropping cells that are equal to the canonical empty cell.
+ * The slab is assumed to be a single rectangle starting at (0,0) — the shape
+ * `attach`'s {@link WorkbookSnapshot} carries per sheet.
+ */
+function slabToCellMap(slab: CellSlab): Map<string, CellState> {
+  const out = new Map<string, CellState>();
+  for (let r = 0; r < slab.values.length; r++) {
+    const valuesRow = slab.values[r] ?? [];
+    const formulasRow = slab.formulas[r] ?? [];
+    const numberFormatsRow = slab.numberFormats[r] ?? [];
+    const valueTypesRow = slab.valueTypes[r] ?? [];
+    for (let c = 0; c < valuesRow.length; c++) {
+      const cell: CellState = {
+        value: valuesRow[c] ?? '',
+        formula: formulasRow[c] ?? null,
+        valueType: valueTypesRow[c] ?? 'empty',
+        numberFormat: numberFormatsRow[c] ?? 'General',
+      };
+      if (!cellStateEquals(cell, EMPTY_CELL)) {
+        out.set(`${String(r)},${String(c)}`, cell);
+      }
+    }
+  }
+  return out;
+}
+
+/** Compare two `"row,col"` keys row-major (ascending row, then column). */
+function byRowMajor(a: string, b: string): number {
+  const [ar, ac] = a.split(',').map(Number) as [number, number];
+  const [br, bc] = b.split(',').map(Number) as [number, number];
+  return ar - br !== 0 ? ar - br : ac - bc;
 }

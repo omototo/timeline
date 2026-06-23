@@ -113,3 +113,31 @@ export function projectionDiff(from: ShadowState, to: ShadowState): ReconcileOp[
   }
   return ops;
 }
+
+/**
+ * Compute the minimal `setCells` reconcile ops (FORMULA mode) that bring the
+ * REAL worksheets from the `from` state to the `to` target — the live-write
+ * counterpart of {@link projectionDiff}.
+ *
+ * Used by `switch` (ADR-0005): checking out another branch tip writes the
+ * target state live onto the real sheets, in `formula` mode, so the workbook
+ * recalculates (Present is editable; Preview is frozen values). Unlike the
+ * Preview projector, ops carry the LOGICAL sheet id (the real worksheet), not a
+ * per-sheet preview surface — `switch` lands on the live workbook, not a sandbox.
+ */
+export function realSheetDiff(from: ShadowState, to: ShadowState): ReconcileOp[] {
+  const sheetIds = new Set<SheetId>([...from.populatedSheetIds(), ...to.populatedSheetIds()]);
+  const ops: ReconcileOp[] = [];
+  for (const sheetId of [...sheetIds].sort()) {
+    for (const change of sheetCellChanges(from, to, sheetId)) {
+      ops.push({
+        op: 'setCells',
+        sheetId,
+        area: [{ startRow: change.row, startCol: change.col, rowCount: 1, colCount: 1 }],
+        slab: singleCellSlab(change.state),
+        mode: 'formula',
+      });
+    }
+  }
+  return ops;
+}

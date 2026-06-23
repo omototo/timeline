@@ -147,12 +147,12 @@ export interface WorksheetDelta {
 }
 
 /**
- * One sheet's worth of drift reconciliation (ADR-0006), inspectable.
- *
- * TODO(spec): the spec references `SheetDiff` for `ReconciliationDelta.perSheet`
- * but does not pin its shape. This is a minimal-but-sensible version: per-sheet
- * coordinate-keyed before/after cell states, mirroring a Value Delta scoped to
- * a single sheet plus the structural ops applied during reconciliation.
+ * One sheet's worth of drift reconciliation (ADR-0006), inspectable. Pinned
+ * (Wave 4): per-sheet coordinate-keyed before/after cell states (a Value Delta
+ * scoped to one sheet) plus any structural ops applied during reconciliation.
+ * Drift currently populates `cells` only (value changes — content, not the
+ * untracked coordinate moves that produced it); `structural` is reserved for
+ * future structural-drift capture and is currently always empty.
  */
 export interface SheetDiff {
   sheetId: SheetId;
@@ -213,9 +213,11 @@ export interface EffectEnvelope {
 // ---------------------------------------------------------------------------
 
 /**
- * TODO(spec): `WorkbookSnapshot` is the hashed, observed full-workbook state
- * handed to `attach` for drift comparison. The spec references it but leaves
- * the shape open. Minimal-but-sensible: a content hash plus per-sheet slabs.
+ * `WorkbookSnapshot` — the hashed, observed full-workbook state handed to
+ * `attach` for drift comparison (Wave 4, ADR-0006). Pinned: the shell computes
+ * the canonical `contentHash`; the engine compares it to the persisted tip hash
+ * and itemizes the per-cell diff on drift. Per-sheet slabs are anchored at A1,
+ * row-major.
  */
 export interface WorkbookSnapshot {
   workbookGuid: string;
@@ -225,9 +227,8 @@ export interface WorkbookSnapshot {
 }
 
 /**
- * TODO(spec): `PersistedHead` is the resume payload loaded from the store and
- * passed into `attach`. The spec references it but leaves the shape open.
- * Minimal-but-sensible: the persisted HEAD plus the stamped tip hash.
+ * `PersistedHead` — the resume payload loaded from the store and passed into
+ * `attach` (Wave 4): the persisted HEAD plus the stamped tip hash (ADR-0006).
  */
 export interface PersistedHead {
   head: Head;

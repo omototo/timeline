@@ -155,6 +155,7 @@ These do not appear on the `TimelineEngine` interface; they are concrete-class q
 - **Wave 1 (value path):** `readShadow(sheetId, row, col)`, `shadowCellCount(sheetId)`, `tipStepIndex(branchId?)`, `steps(branchId?)`, `lastDiagnostic()`.
 - **Wave 2 (structural + worksheet paths):** `sheetMeta(sheetId)` → `SheetMeta | undefined`, `shadowSheets()` → `SheetMeta[]` (tab order). Both delegate to the Shadow State's sheet map.
 - **Wave 3 (keyframes + reconstruction + navigation):** `keyframeIndices(branchId?)` → `number[]` (stepIndexes at which keyframes were written, ascending) and `readReconstructed(ref, sheetId, row, col)` → `CellState` (forward-replay reconstruct at `ref`, then read one cell). Both are pure inspectors over the resident keyframes + delta log.
+- **Wave 4 (branching + lifecycle):** `branches()` → `BranchMeta[]` (the resident branch graph in tab order — fork lineage + provisional flags), `hasBranch(branchId)` → `boolean` (is the branch still resident / not GC'd), and `isSuspended()` → `boolean` (is tracking suspended for co-authoring — ADR-0006). All pure inspectors over the resident branch map + suspension flag.
 
 ### Engine construction options (Wave 3) — adaptive keyframe cadence
 
@@ -197,5 +198,47 @@ type SheetMeta = { sheetId: SheetId; name: string; order: number };
 ### Structural path semantics (Wave 2)
 
 A `StructuralObservation` becomes a `StructuralDelta` applied as a **coordinate remap** of the Shadow State (insert opens blank space and shifts cells down/right; delete removes the spanned cells and shifts the rest up/left). Per ADR-0001 it emits **no value diff** (a structural op is a coordinate transform, not a value change), and per ADR-0003 it **never rewrites formula text** — cell formulas are opaque strings the engine only relocates, never edits. Forward apply is deterministic (needed for replay). The `unsupportedKind` `IngestDiagnostic` code is now unreachable for `structural`/`worksheet`/`value`; it is retained for any future un-handled kind.
+
+### Branching & lifecycle (Wave 4)
+
+Implemented behind the frozen surface; signatures unchanged. Cited ADRs: ADR-0005 (workbook-scoped branching), ADR-0006 (drift + reconciliation + co-authoring), ADR-0013 (functional core).
+
+**`branch(from: StepRef)`** forks a **provisional** branch at `from` and promotes HEAD to its tip (editable Present). The fork's state is reconstructed at `from` and seeded as a **base keyframe at stepIndex −1** on the new branch (so the new branch's own forward-replay starts from the fork point); the Shadow State becomes that reconstructed state immediately. Branch ids are minted deterministically (`branch-1`, `branch-2`, …). `branch()` emits **only `setHead`** — it does **not** persist (`saveBranch`) yet. A provisional fork persists **lazily on its first `ingest`** (the first recorded Step prepends a `saveBranch` op and flips the branch to non-provisional). The implicit `main` root is never a saved `BranchMeta` and emits no `saveBranch`. If a Preview is active, `branch()` returns to Present first (a fork is a Present op).
+
+**`switch(branchId)`** checks out another branch's tip: it reconstructs the target tip, makes it the live Shadow State, and returns a **`formula`-mode `ReconcilePlan` targeting `realSheet`** (live writes onto the real worksheets, by logical sheet id — not preview surfaces). It is **NAVIGATION, not a Step** (no `appendDelta`; only `setHead`). **Provisional GC:** switching *away* from a **zero-Step provisional** branch discards it — its resident log/keyframes are dropped and a `deleteBranch` op is emitted. Switching to the current branch is a no-op (empty envelope). The `realSheetDiff(from, to)` helper (exported from `project.ts`) is the formula-mode live counterpart of the value-mode `projectionDiff`.
+
+**`attach(observed, persisted)`** (ADR-0006) hashes the observed live state and compares it to the persisted tip hash:
+
+- **No persisted head** → fresh workbook: seed the Shadow State from the observed slabs, no Step, empty envelope.
+- **Clean match** (`observed.contentHash === persisted.tipHash`) → restore HEAD from `persisted.head` (`setHead` only), no writes, no Step. Resumes tracking (clears any co-authoring suspension).
+- **Drift** → compute an itemized per-sheet `ReconciliationDelta` (the Shadow State is "before"; the observed slabs are "after" — value changes only, per-cell `{ addr, before, after }`), append it as a single inspectable **Reconciliation Step**, and advance the mirror to the observed state. No write-back (the user's current work is authoritative; pre-drift history stays previewable).
+
+The engine receives the already-computed `contentHash` (the shell does the canonical serialization + hash per ADR-0006); the engine compares hashes and itemizes the cell-level diff.
+
+**`detachToCoauthoring()`** (ADR-0006) sets a suspended-tracking flag and returns an **empty envelope with a `coauthoringSuspended` diagnostic** (not a Step). While suspended every `ingest` is a no-op with an `ingestSuspended` diagnostic. A clean `attach` clears suspension.
+
+**State-machine validity.** Mode-invalid ops never corrupt state — they return a no-op envelope plus a diagnostic: `ingest` in Preview → `ingestInPreview`; `ingest` while suspended → `ingestSuspended`. `IngestDiagnostic.code` now spans `'ingestInPreview' | 'unsupportedKind' | 'ingestSuspended' | 'coauthoringSuspended'`.
+
+### Pinned: `WorkbookSnapshot`, `PersistedHead`, `SheetDiff` (Wave 4 — promoted from TODO(spec))
+
+Wave 4 consumes these shapes, so they are now pinned (the bodies already in `types.ts` match):
+
+```ts
+interface WorkbookSnapshot {
+  workbookGuid: string;
+  contentHash: string;                                  // canonical hash (shell-computed) for clean-resume vs drift
+  sheets: { sheetId: SheetId; slab: CellSlab }[];        // observed live per-sheet content (anchored A1, row-major)
+}
+
+interface PersistedHead { head: Head; tipHash: string; } // the resume payload loaded from the store
+
+interface SheetDiff {                                     // one sheet's reconciliation diff (ADR-0006), inspectable
+  sheetId: SheetId;
+  cells: { addr: Rect; before: CellState; after: CellState }[];
+  structural: { changeType: StructuralChangeType; address: Rect; shiftDirection?: ShiftDirection }[];
+}
+```
+
+Drift reconciliation populates `SheetDiff.cells` (value changes only — content, not the untracked coordinate moves that produced it); `SheetDiff.structural` is reserved for future structural-drift capture and is currently always empty.
 
 

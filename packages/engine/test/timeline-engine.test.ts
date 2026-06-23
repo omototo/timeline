@@ -223,22 +223,26 @@ describe('TimelineEngineImpl.ingest — refusals & diagnostics', () => {
   });
 });
 
-describe('TimelineEngineImpl — Wave-1-out-of-scope methods throw', () => {
+describe('TimelineEngineImpl — still-out-of-scope query methods throw', () => {
   let engine: TimelineEngineImpl;
 
   beforeEach(() => {
     engine = new TimelineEngineImpl();
   });
 
-  it('timeline / inspectStep / lifecycle / branch / switch are not implemented', () => {
+  it('timeline / inspectStep are not implemented yet', () => {
     const ref = { branchId: 'main', stepIndex: 0 };
     expect(() => engine.timeline()).toThrow();
     expect(() => engine.inspectStep(ref)).toThrow();
+  });
+
+  it('lifecycle / branch / switch are implemented (Wave 4 — no longer throw)', () => {
+    const ref = { branchId: 'main', stepIndex: 0 };
     expect(() =>
       engine.attach({ workbookGuid: 'g', contentHash: 'h', sheets: [] }, null),
-    ).toThrow();
-    expect(() => engine.detachToCoauthoring()).toThrow();
-    expect(() => engine.branch(ref)).toThrow();
-    expect(() => engine.switch('main')).toThrow();
+    ).not.toThrow();
+    expect(() => engine.detachToCoauthoring()).not.toThrow();
+    expect(() => engine.branch(ref)).not.toThrow();
+    expect(() => engine.switch('main')).not.toThrow();
   });
 });
