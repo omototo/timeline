@@ -84,6 +84,36 @@ describe('TimelineEngineImpl.timeline — histogram magnitudes', () => {
     expect(view.branches).toEqual([]);
   });
 
+  it('includes a main BranchMeta after a main-only Step so step refs resolve', () => {
+    // Regression (Wave 5 review): a single ingest on main must yield a coherent
+    // histogram — every Step ref must resolve within view.branches. Before the
+    // fix, view.steps pointed at branchId 'main' while view.branches was [].
+    setCell(engine, 'Sheet1', 0, 0, 'hi');
+    const view = engine.timeline();
+
+    const main = view.branches.find((b) => b.id === 'main');
+    expect(main).toBeDefined();
+    expect(main).toEqual({ id: 'main', order: 0, provisional: false });
+
+    // Every Step ref resolves to a branch in the returned graph.
+    const branchIds = new Set(view.branches.map((b) => b.id));
+    for (const step of view.steps) {
+      expect(branchIds.has(step.ref.branchId)).toBe(true);
+    }
+  });
+
+  it('does NOT persist main as a saved BranchMeta on its first Step', () => {
+    // The implicit main root is registered resident but never emits a saveBranch
+    // (ADR-0005: "main is never a saved BranchMeta"). The appendDelta + setHead
+    // are the only persist ops for a main-only edit.
+    const env = setCell(engine, 'Sheet1', 0, 0, 'hi');
+    const ops = env.persist ?? [];
+    expect(ops.some((o) => o.op === 'saveBranch')).toBe(false);
+    expect(ops.map((o) => o.op)).toEqual(['appendDelta', 'setHead']);
+    // main is resident even though it was never persisted.
+    expect(engine.hasBranch('main')).toBe(true);
+  });
+
   it("a single-cell edit's magnitude is 1", () => {
     setCell(engine, 'Sheet1', 0, 0, 'hi');
     const view = engine.timeline();

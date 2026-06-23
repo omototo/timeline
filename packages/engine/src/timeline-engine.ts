@@ -303,6 +303,13 @@ export class TimelineEngineImpl implements TimelineEngine {
    */
   #recordStep(delta: Delta, applyToShadow: () => void): EffectEnvelope {
     const branchId = this.#head.branchId;
+    // Register the branch into the resident graph on its first Step so the
+    // timeline's `view.branches` always resolves the `view.steps` refs (the
+    // TimelineView contract). For the implicit `main` root this lazily mints
+    // its BranchMeta WITHOUT persisting it: #branchMeta only populates the
+    // resident map; it does NOT add to #persistedBranches nor emit a
+    // saveBranch, preserving the "main is never a saved BranchMeta" invariant.
+    this.#branchMeta(branchId);
     const stepIndex = this.#nextStepIndex(branchId);
     this.#appendStep(branchId, { stepIndex, delta });
     applyToShadow();
