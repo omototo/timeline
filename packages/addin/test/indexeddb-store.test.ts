@@ -4,8 +4,23 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
-import { IndexedDbStore } from '../src/excel/indexeddb-store.ts';
+import { databaseNameFor, IndexedDbStore } from '../src/excel/indexeddb-store.ts';
 import type { BranchMeta, Delta, Head, StructuralDelta, ValueDelta } from '@timeline/engine';
+
+describe('databaseNameFor', () => {
+  it('returns the shared default name for a null/empty key', () => {
+    expect(databaseNameFor(null)).toBe('timeline-history');
+    expect(databaseNameFor('')).toBe('timeline-history');
+  });
+
+  it('derives a distinct, deterministic per-workbook name', () => {
+    const a = databaseNameFor('https://host/Book1.xlsx');
+    const b = databaseNameFor('https://host/Book2.xlsx');
+    expect(a).toBe(databaseNameFor('https://host/Book1.xlsx'));
+    expect(a).not.toBe(b);
+    expect(a).toMatch(/^timeline-history-[0-9a-f]{8}$/);
+  });
+});
 
 const BRANCH = 'main';
 
@@ -215,6 +230,24 @@ describe('IndexedDbStore', () => {
     it('keeps keyframes isolated per branch', async () => {
       await store.writeKeyframe('a', 10, { snapshot: 'a' });
       expect(await store.loadKeyframeAtOrBefore('b', 10)).toBeNull();
+    });
+  });
+
+  describe('listKeyframes', () => {
+    it('returns every keyframe for a branch, step-ascending', async () => {
+      await store.writeKeyframe(BRANCH, 200, { snapshot: 200 });
+      await store.writeKeyframe(BRANCH, 0, { snapshot: 0 });
+      await store.writeKeyframe(BRANCH, 100, { snapshot: 100 });
+      await store.writeKeyframe('other', 5, { snapshot: 5 });
+      expect(await store.listKeyframes(BRANCH)).toEqual([
+        { stepIndex: 0, state: { snapshot: 0 } },
+        { stepIndex: 100, state: { snapshot: 100 } },
+        { stepIndex: 200, state: { snapshot: 200 } },
+      ]);
+    });
+
+    it('returns an empty list for a branch with no keyframes', async () => {
+      expect(await store.listKeyframes('nope')).toEqual([]);
     });
   });
 

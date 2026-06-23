@@ -236,6 +236,32 @@ export interface PersistedHead {
 }
 
 /**
+ * One branch's persisted history, loaded back from a {@link HistoryStore} for
+ * `rehydrate`. `deltas` are in step order (their array index is their
+ * stepIndex); `keyframes` are the periodic snapshots persisted via
+ * `writeKeyframe` (a fork's base keyframe at stepIndex −1 is NOT persisted — the
+ * engine recomputes it from the parent at the fork point).
+ */
+export interface RehydratedBranch {
+  branchId: BranchId;
+  deltas: Delta[];
+  keyframes: { stepIndex: number; state: unknown }[];
+}
+
+/**
+ * `RehydrationData` — the full persisted timeline loaded from a
+ * {@link HistoryStore} on launch, handed to `rehydrate` to restore the engine's
+ * in-memory history (log, branches, keyframes, head) before `attach` reseeds the
+ * Shadow State from the live workbook. `branches` excludes the implicit `main`
+ * root (which is never persisted as a BranchMeta); `perBranch` includes it.
+ */
+export interface RehydrationData {
+  head: Head | null;
+  branches: BranchMeta[];
+  perBranch: RehydratedBranch[];
+}
+
+/**
  * `TimelineQuery` filters the histogram model (Wave 5 — pinned). Optional branch
  * scope plus an inclusive `[fromStepIndex, toStepIndex]` step window. Filters the
  * returned Steps only; the branch graph is always the full resident fork graph.

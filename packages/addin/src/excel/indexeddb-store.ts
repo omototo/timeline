@@ -24,6 +24,19 @@ import type { BranchId, BranchMeta, Delta, Head } from '@timeline/engine';
 const DB_NAME = 'timeline-history';
 const DB_VERSION = 1;
 
+/** Per-workbook database name so two workbooks never share one history. */
+export function databaseNameFor(workbookKey: string | null): string {
+  if (workbookKey === null || workbookKey === '') {
+    return DB_NAME;
+  }
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < workbookKey.length; i += 1) {
+    hash ^= workbookKey.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${DB_NAME}-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
 const STORE_DELTAS = 'deltas';
 const STORE_KEYFRAMES = 'keyframes';
 const STORE_HEAD = 'head';
@@ -78,14 +91,18 @@ function awaitTransaction(tx: IDBTransaction): Promise<void> {
 
 export class IndexedDbStore implements HistoryStore {
   readonly #factory: IDBFactory;
+  readonly #dbName: string;
   #db: IDBDatabase | null = null;
 
   /**
    * @param factory injectable `IDBFactory` (default `globalThis.indexedDB`) so
    *   tests can pass `fake-indexeddb`.
+   * @param dbName the database name (default `timeline-history`); pass a
+   *   per-workbook name (see {@link databaseNameFor}) to isolate histories.
    */
-  constructor(factory: IDBFactory = globalThis.indexedDB) {
+  constructor(factory: IDBFactory = globalThis.indexedDB, dbName: string = DB_NAME) {
     this.#factory = factory;
+    this.#dbName = dbName;
   }
 
   /**
@@ -101,7 +118,7 @@ export class IndexedDbStore implements HistoryStore {
   }
 
   #open(): Promise<IDBDatabase> {
-    const request = this.#factory.open(DB_NAME, DB_VERSION);
+    const request = this.#factory.open(this.#dbName, DB_VERSION);
     request.onupgradeneeded = (): void => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE_DELTAS)) {
@@ -194,6 +211,17 @@ export class IndexedDbStore implements HistoryStore {
     }
     const record = cursor.value as KeyframeRecord;
     return { stepIndex: record.stepIndex, state: record.state };
+  }
+
+  async listKeyframes(branchId: BranchId): Promise<{ stepIndex: number; state: unknown }[]> {
+    const db = this.#requireDb();
+    const tx = db.transaction(STORE_KEYFRAMES, 'readonly');
+    const store = tx.objectStore(STORE_KEYFRAMES);
+    const range = IDBKeyRange.bound([branchId, -Infinity], [branchId, Infinity]);
+    const records = (await promisifyRequest(store.getAll(range))) as KeyframeRecord[];
+    return records
+      .map((r) => ({ stepIndex: r.stepIndex, state: r.state }))
+      .sort((a, b) => a.stepIndex - b.stepIndex);
   }
 
   async loadDeltas(branchId: BranchId, from: number, to: number): Promise<Delta[]> {

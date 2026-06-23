@@ -32,6 +32,7 @@ import type {
   Observation,
   PersistedHead,
   PersistOp,
+  RehydrationData,
   ReconcileOp,
   ReconcilePlan,
   ReconciliationDelta,
@@ -532,6 +533,75 @@ export class TimelineEngineImpl implements TimelineEngine {
    * A successful attach always clears any co-authoring suspension — re-attaching
    * resumes tracking.
    */
+  /**
+   * Restore the in-memory timeline from history loaded off a HistoryStore, BEFORE
+   * `attach` (which then reseeds the Shadow State from the live workbook). Rebuilds
+   * the per-branch log (a delta's array index is its stepIndex), branch graph,
+   * keyframes, and the monotonic order/seq counters, and marks loaded branches
+   * persisted so they are not re-saved. A fork's base keyframe (stepIndex −1) is
+   * never persisted, so it is recomputed from the parent at the fork point —
+   * processing branches in tab order guarantees a parent is ready before its
+   * children. Pure state restore: emits nothing.
+   */
+  rehydrate(data: RehydrationData): void {
+    this.#log.clear();
+    this.#branches.clear();
+    this.#keyframes.clear();
+    this.#stepsSinceKeyframe.clear();
+    this.#bytesSinceKeyframe.clear();
+    this.#persistedBranches.clear();
+    this.#branchOrder = 0;
+    this.#branchSeq = 0;
+
+    // Branch metadata — these came from `saveBranch`, so they are persisted.
+    for (const meta of data.branches) {
+      this.#branches.set(meta.id, meta);
+      this.#persistedBranches.add(meta.id);
+      this.#branchOrder = Math.max(this.#branchOrder, meta.order + 1);
+      const seq = parseBranchSeq(meta.id);
+      if (seq !== null) this.#branchSeq = Math.max(this.#branchSeq, seq);
+    }
+
+    // Per-branch log + persisted keyframes (a delta's index is its stepIndex).
+    for (const branch of data.perBranch) {
+      if (branch.deltas.length > 0) {
+        this.#log.set(
+          branch.branchId,
+          branch.deltas.map((delta, stepIndex) => ({ stepIndex, delta })),
+        );
+      }
+      if (branch.keyframes.length > 0) {
+        const frames = branch.keyframes
+          .map((kf) => ({ stepIndex: kf.stepIndex, snapshot: kf.state as ShadowSnapshot }))
+          .sort((a, b) => a.stepIndex - b.stepIndex);
+        this.#keyframes.set(branch.branchId, frames);
+      }
+    }
+
+    // The implicit `main` root is never a saved BranchMeta; register it if it has
+    // any resident history so its Steps resolve a branch in the timeline view.
+    if (this.#log.has(MAIN_BRANCH) && !this.#branches.has(MAIN_BRANCH)) {
+      this.#branches.set(MAIN_BRANCH, { id: MAIN_BRANCH, order: 0, provisional: false });
+      this.#branchOrder = Math.max(this.#branchOrder, 1);
+    }
+
+    // Recompute each fork's missing base keyframe from its parent at the fork
+    // point. Tab order ascending => a parent (lower order) is restored first.
+    const ordered = [...this.#branches.values()].sort((a, b) => a.order - b.order);
+    for (const meta of ordered) {
+      if (meta.forkedAt === undefined) continue;
+      if (this.#keyframeAtOrBefore(meta.id, BASE_KEYFRAME_INDEX) !== null) continue;
+      const forkState = this.#reconstructAt(meta.forkedAt);
+      this.#storeKeyframe(meta.id, {
+        stepIndex: BASE_KEYFRAME_INDEX,
+        snapshot: forkState.snapshot(),
+      });
+    }
+
+    this.#head =
+      data.head === null ? { branchId: MAIN_BRANCH, mode: 'present' } : restoreHead(data.head);
+  }
+
   attach(observed: WorkbookSnapshot, persisted: PersistedHead | null): EffectEnvelope {
     this.#lastDiagnostic = null;
     this.#suspended = false;
@@ -1002,6 +1072,12 @@ export class TimelineEngineImpl implements TimelineEngine {
 // ---------------------------------------------------------------------------
 // Module-level helpers (Wave 4 lifecycle)
 // ---------------------------------------------------------------------------
+
+/** Parse the ordinal from a minted `branch-N` id, or null for the implicit `main`. */
+function parseBranchSeq(id: BranchId): number | null {
+  const match = /^branch-(\d+)$/.exec(id);
+  return match?.[1] !== undefined ? Number(match[1]) : null;
+}
 
 /** Restore a persisted {@link Head}, defensively normalized (omit preview index when absent). */
 function restoreHead(head: Head): Head {

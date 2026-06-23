@@ -62,6 +62,17 @@ export class InMemoryStore implements HistoryStore {
     return Promise.resolve({ stepIndex: bestIndex, state });
   }
 
+  listKeyframes(branchId: BranchId): Promise<{ stepIndex: number; state: unknown }[]> {
+    const frames = this.#keyframes.get(branchId);
+    if (frames === undefined) {
+      return Promise.resolve([]);
+    }
+    const all = [...frames.entries()]
+      .map(([stepIndex, state]) => ({ stepIndex, state }))
+      .sort((a, b) => a.stepIndex - b.stepIndex);
+    return Promise.resolve(all);
+  }
+
   loadDeltas(branchId: BranchId, from: number, to: number): Promise<Delta[]> {
     const log = this.#deltas.get(branchId);
     if (log === undefined) {

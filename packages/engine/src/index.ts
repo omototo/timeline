@@ -46,6 +46,8 @@ export type {
   // lifecycle / query placeholders
   WorkbookSnapshot,
   PersistedHead,
+  RehydratedBranch,
+  RehydrationData,
   TimelineQuery,
   TimelineView,
   StepDetail,
