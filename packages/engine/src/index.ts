@@ -54,6 +54,12 @@ export type {
 // Engine interface.
 export type { TimelineEngine } from './engine.ts';
 
+// Concrete engine (Wave 1: value path) + its additive diagnostic shape.
+export { TimelineEngineImpl, type IngestDiagnostic } from './timeline-engine.ts';
+
+// Shadow State — in-memory workbook mirror (ADR-0001).
+export { ShadowState, type ChangedCell } from './shadow-state.ts';
+
 // Persistence-seam ports.
 export type { HistoryStore, WorkbookStamp, WorkbookStampData } from './ports.ts';
 
