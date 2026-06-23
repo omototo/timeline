@@ -54,6 +54,37 @@ export type {
 // Engine interface.
 export type { TimelineEngine } from './engine.ts';
 
+// Concrete engine (Wave 1: value path; Wave 3: keyframes + navigation) plus its
+// additive diagnostic and construction-option shapes.
+export {
+  TimelineEngineImpl,
+  stepMagnitude,
+  stepFormulaCells,
+  type IngestDiagnostic,
+  type TimelineEngineOptions,
+} from './timeline-engine.ts';
+
+// Shadow State — in-memory workbook mirror (ADR-0001).
+export {
+  ShadowState,
+  type ChangedCell,
+  type SheetMeta,
+  type ShadowSnapshot,
+} from './shadow-state.ts';
+
+// Reconstruction — forward-replay rebuild (Wave 3).
+export { applyDelta, reconstruct } from './reconstruct.ts';
+
+// Projection diff — engine-side minimal ReconcilePlan diff (Wave 3).
+// Multi-sheet: one Preview surface per logical sheet (ADR-0005).
+// `realSheetDiff` is the formula-mode live counterpart used by `switch` (Wave 4).
+export {
+  PREVIEW_SHEET_PREFIX,
+  previewSheetIdFor,
+  projectionDiff,
+  realSheetDiff,
+} from './project.ts';
+
 // Persistence-seam ports.
 export type { HistoryStore, WorkbookStamp, WorkbookStampData } from './ports.ts';
 

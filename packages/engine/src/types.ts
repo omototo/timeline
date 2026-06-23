@@ -147,12 +147,12 @@ export interface WorksheetDelta {
 }
 
 /**
- * One sheet's worth of drift reconciliation (ADR-0006), inspectable.
- *
- * TODO(spec): the spec references `SheetDiff` for `ReconciliationDelta.perSheet`
- * but does not pin its shape. This is a minimal-but-sensible version: per-sheet
- * coordinate-keyed before/after cell states, mirroring a Value Delta scoped to
- * a single sheet plus the structural ops applied during reconciliation.
+ * One sheet's worth of drift reconciliation (ADR-0006), inspectable. Pinned
+ * (Wave 4): per-sheet coordinate-keyed before/after cell states (a Value Delta
+ * scoped to one sheet) plus any structural ops applied during reconciliation.
+ * Drift currently populates `cells` only (value changes — content, not the
+ * untracked coordinate moves that produced it); `structural` is reserved for
+ * future structural-drift capture and is currently always empty.
  */
 export interface SheetDiff {
   sheetId: SheetId;
@@ -213,9 +213,11 @@ export interface EffectEnvelope {
 // ---------------------------------------------------------------------------
 
 /**
- * TODO(spec): `WorkbookSnapshot` is the hashed, observed full-workbook state
- * handed to `attach` for drift comparison. The spec references it but leaves
- * the shape open. Minimal-but-sensible: a content hash plus per-sheet slabs.
+ * `WorkbookSnapshot` — the hashed, observed full-workbook state handed to
+ * `attach` for drift comparison (Wave 4, ADR-0006). Pinned: the shell computes
+ * the canonical `contentHash`; the engine compares it to the persisted tip hash
+ * and itemizes the per-cell diff on drift. Per-sheet slabs are anchored at A1,
+ * row-major.
  */
 export interface WorkbookSnapshot {
   workbookGuid: string;
@@ -225,9 +227,8 @@ export interface WorkbookSnapshot {
 }
 
 /**
- * TODO(spec): `PersistedHead` is the resume payload loaded from the store and
- * passed into `attach`. The spec references it but leaves the shape open.
- * Minimal-but-sensible: the persisted HEAD plus the stamped tip hash.
+ * `PersistedHead` — the resume payload loaded from the store and passed into
+ * `attach` (Wave 4): the persisted HEAD plus the stamped tip hash (ADR-0006).
  */
 export interface PersistedHead {
   head: Head;
@@ -235,9 +236,9 @@ export interface PersistedHead {
 }
 
 /**
- * TODO(spec): `TimelineQuery` filters/paginates the histogram model. The spec
- * references it but leaves the shape open. Minimal-but-sensible: optional
- * branch scope and an inclusive step window.
+ * `TimelineQuery` filters the histogram model (Wave 5 — pinned). Optional branch
+ * scope plus an inclusive `[fromStepIndex, toStepIndex]` step window. Filters the
+ * returned Steps only; the branch graph is always the full resident fork graph.
  */
 export interface TimelineQuery {
   branchId?: BranchId;
@@ -246,24 +247,27 @@ export interface TimelineQuery {
 }
 
 /**
- * TODO(spec): `TimelineView` is the histogram model returned by `timeline()`
- * (steps, bar magnitudes, branch splits). The spec references it but leaves the
- * shape open. Minimal-but-sensible version below.
+ * `TimelineView` — the histogram model returned by `timeline()` (Wave 5 —
+ * pinned). `branches` is the full resident fork graph (parent + forkedAt, tab
+ * order) so the renderer can draw branch splits; `steps` are the ordered Steps,
+ * each with a per-Step `magnitude` (the histogram bar height — see
+ * `stepMagnitude`).
  */
 export interface TimelineView {
   branches: BranchMeta[];
   steps: {
     ref: StepRef;
     kind: Delta['kind'];
-    /** Bar magnitude for the histogram (e.g. cells touched). */
+    /** Bar magnitude for the histogram: value=cell count; structural/worksheet=1. */
     magnitude: number;
   }[];
 }
 
 /**
- * TODO(spec): `StepDetail` is the formula-text metadata returned by
- * `inspectStep()` for Preview. The spec references it but leaves the shape open.
- * Minimal-but-sensible version below.
+ * `StepDetail` — the formula-text metadata returned by `inspectStep()` for the
+ * Preview inspect/diff UI (Wave 5 — pinned). For every cell the Step touched,
+ * its before/after formula text. `structural`/`worksheet` Steps never rewrite
+ * formula text (ADR-0003), so their `cells` list is empty.
  */
 export interface StepDetail {
   ref: StepRef;

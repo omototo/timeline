@@ -61,10 +61,10 @@ Run these from the repo root:
 | `bun run test:cov`                  | Vitest with v8 coverage.                    |
 | `bun run build`                     | Typecheck, then build the add-in with Vite. |
 
-Before opening a pull request, make sure the project is green:
+Before opening a pull request, run the full gate (mirrors CI exactly):
 
 ```sh
-bun run typecheck && bun run lint && bun run test
+bun run verify
 ```
 
 ## Commit messages — Conventional Commits
@@ -104,12 +104,36 @@ git commit -s
 Pull requests whose commits are not signed off will be asked to amend before
 merge. There is no separate CLA to sign.
 
+## Base rules (working agreement)
+
+These exist because skipping them has bitten us before — a branch that was
+"green locally" but red in CI, and a PR that merged red and broke `main`.
+
+1. **Run `bun run verify` before every push and before opening or updating a
+   PR.** It runs the **exact** CI gate in one command — `typecheck → lint →
+format:check → test:cov → build`. If `verify` is green, CI will be green.
+   (A partial gate that skips `format:check` or `build` is what reddened `main`.)
+2. **Never merge a PR with a failing or pending check** — not even with admin
+   rights. Red CI on `main` blocks everyone; wait for green.
+3. **Update a PR branch one way only** — either GitHub's "Update branch" button
+   _or_ a local `git merge origin/main`, never both. Doing both diverges the
+   branch and forces a messy reconcile.
+4. **One stream owns its files.** Engine → `packages/engine`, Office adapters →
+   `packages/addin/src/excel`, UI → `packages/addin/src/ui`. Don't edit another
+   stream's files; raise interface changes in the PR instead of editing the
+   frozen `docs/engine-interface.md` unilaterally.
+5. **Branches are squash-merged and auto-deleted.** Delete your local branch
+   after merge (`git branch -D <branch>`); don't leave stale branches/worktrees.
+6. **No AI co-authorship or attribution** (Claude or Codex) in commit messages
+   or PR titles/bodies.
+
 ## Pull requests
 
-1. Fork and branch off the default branch.
-2. Keep the project green (`typecheck`, `lint`, `test`).
-3. Use Conventional Commits and sign off (`git commit -s`).
+1. Branch off the default branch (`main`).
+2. **`bun run verify` is green** (rule 1 above).
+3. Conventional Commits, signed off (`git commit -s`).
 4. Describe the change and link any relevant ADRs in `docs/adr/`.
+5. CI green + a maintainer approval before merge (`main` is protected).
 
 By contributing, you agree that your contributions are licensed under the
 Apache-2.0 license that covers this project.

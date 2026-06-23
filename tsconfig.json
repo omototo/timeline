@@ -1,4 +1,8 @@
 {
   "files": [],
-  "references": [{ "path": "./packages/engine" }, { "path": "./packages/addin" }]
+  "references": [
+    { "path": "./packages/engine" },
+    { "path": "./packages/engine/tsconfig.bench.json" },
+    { "path": "./packages/addin" }
+  ]
 }
