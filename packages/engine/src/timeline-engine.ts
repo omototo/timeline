@@ -27,10 +27,14 @@ import type {
   PersistedHead,
   StepDetail,
   StepRef,
+  StructuralDelta,
+  StructuralObservation,
   TimelineQuery,
   TimelineView,
   ValueDelta,
   WorkbookSnapshot,
+  WorksheetDelta,
+  WorksheetObservation,
 } from './types.ts';
 
 /** The default branch id every workbook starts on. */
@@ -83,16 +87,22 @@ export class TimelineEngineImpl implements TimelineEngine {
       return {};
     }
 
-    if (obs.kind !== 'value') {
-      // Wave 1 implements the value path only; other kinds are recorded as a
-      // diagnostic and produce no Step (additive waves implement them).
-      this.#lastDiagnostic = {
-        code: 'unsupportedKind',
-        message: `ingest does not yet handle Observation kind '${obs.kind}' (Wave 1: value path only).`,
-      };
-      return {};
+    switch (obs.kind) {
+      case 'value':
+        return this.#ingestValue(obs);
+      case 'structural':
+        return this.#ingestStructural(obs);
+      case 'worksheet':
+        return this.#ingestWorksheet(obs);
     }
+  }
 
+  /**
+   * Value path (Wave 1): diff the after-slab against the Shadow State and, if
+   * anything changed, record a {@link ValueDelta} Step. A no-op observation
+   * records no Step and returns an empty envelope.
+   */
+  #ingestValue(obs: Extract<Observation, { kind: 'value' }>): EffectEnvelope {
     const changed = this.#shadow.diff(obs);
     if (changed.length === 0) {
       // No-op observation: nothing changed -> no Step, empty envelope.
@@ -100,15 +110,62 @@ export class TimelineEngineImpl implements TimelineEngine {
     }
 
     const delta: ValueDelta = { kind: 'value', sheetId: obs.sheetId, cells: changed };
+    return this.#recordStep(delta, () => {
+      this.#shadow.apply(delta);
+    });
+  }
 
-    // Append the Step, advance the tip, update the Shadow State forward.
+  /**
+   * Structural path (Wave 2): a row/column/cell insert or delete is a
+   * COORDINATE REMAP, not a value change. Build a {@link StructuralDelta} from
+   * the Observation, apply the remap to the Shadow State, and record one Step.
+   * Emits NO value diff (ADR-0001 suppress rule) and never rewrites formula
+   * text (ADR-0003). Always records a Step (a structural op is a real event
+   * even if it moves no currently-populated cells).
+   */
+  #ingestStructural(obs: StructuralObservation): EffectEnvelope {
+    const delta: StructuralDelta = {
+      kind: 'structural',
+      sheetId: obs.sheetId,
+      changeType: obs.changeType,
+      address: obs.address,
+      ...(obs.shiftDirection !== undefined ? { shiftDirection: obs.shiftDirection } : {}),
+    };
+    return this.#recordStep(delta, () => {
+      this.#shadow.applyStructural(delta);
+    });
+  }
+
+  /**
+   * Worksheet path (Wave 2): add/delete/rename/reorder (ADR-0005). Build a
+   * {@link WorksheetDelta}, apply it to the Shadow State's sheet map, and record
+   * one Step.
+   */
+  #ingestWorksheet(obs: WorksheetObservation): EffectEnvelope {
+    const delta: WorksheetDelta = {
+      kind: 'worksheet',
+      op: obs.op,
+      sheetId: obs.sheetId,
+      ...(obs.newName !== undefined ? { newName: obs.newName } : {}),
+      ...(obs.newPosition !== undefined ? { newPosition: obs.newPosition } : {}),
+    };
+    return this.#recordStep(delta, () => {
+      this.#shadow.applyWorksheet(delta);
+    });
+  }
+
+  /**
+   * Append `delta` as a Step on the current branch, run `applyToShadow` to push
+   * the Shadow State forward, and return the Present-mode envelope
+   * (`appendDelta` + `setHead`, no reconcile — the user already performed the
+   * change in the live workbook).
+   */
+  #recordStep(delta: Delta, applyToShadow: () => void): EffectEnvelope {
     const branchId = this.#head.branchId;
     const stepIndex = this.#nextStepIndex(branchId);
     this.#appendStep(branchId, { stepIndex, delta });
-    this.#shadow.apply(delta);
+    applyToShadow();
 
-    // No reconcile in Present (the user already typed it). Persist the delta
-    // and the advanced HEAD.
     return {
       persist: [
         { op: 'appendDelta', branchId, delta },
@@ -184,6 +241,16 @@ export class TimelineEngineImpl implements TimelineEngine {
   /** Number of non-empty Shadow State cells held for a sheet. Additive query. */
   shadowCellCount(sheetId: string): number {
     return this.#shadow.cellCount(sheetId);
+  }
+
+  /** Sheet metadata (name + tab order) for a sheet, or undefined. Additive query. */
+  sheetMeta(sheetId: string) {
+    return this.#shadow.sheetMeta(sheetId);
+  }
+
+  /** All tracked sheets in tab order. Additive query. */
+  shadowSheets() {
+    return this.#shadow.sheets();
   }
 
   /**

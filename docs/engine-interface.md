@@ -142,4 +142,29 @@ type Delta = ValueDelta | StructuralDelta | WorksheetDelta | ReconciliationDelta
 
 ## Status: interface resolved (Q1–Q6). Next: materialize as compiling TypeScript in `packages/engine` (types + interfaces + `InMemoryStore` + tests), then build the engine algorithm behind it.
 
+---
+
+## Implementation notes (behind the frozen interface)
+
+The frozen `TimelineEngine` surface (Q4) is implemented behind, unchanged. The following are **additive, non-breaking** extensions made while building the engine algorithm.
+
+### Additive query methods on `TimelineEngineImpl`
+
+These do not appear on the `TimelineEngine` interface; they are concrete-class queries the shell/tests use to inspect engine state without exposing internals. All are pure.
+
+- **Wave 1 (value path):** `readShadow(sheetId, row, col)`, `shadowCellCount(sheetId)`, `tipStepIndex(branchId?)`, `steps(branchId?)`, `lastDiagnostic()`.
+- **Wave 2 (structural + worksheet paths):** `sheetMeta(sheetId)` → `SheetMeta | undefined`, `shadowSheets()` → `SheetMeta[]` (tab order). Both delegate to the Shadow State's sheet map.
+
+### Pinned placeholder: `SheetMeta`
+
+The spec's `WorksheetDelta` (add/delete/rename/reorder — ADR-0005) implies the engine tracks per-sheet metadata, but the spec did not pin a shape for it. Pinned (minimal-but-sensible): the **stable `sheetId`** (a sheet keeps its id across a rename), its display **`name`**, and its **`order`** (0-based left-to-right tab position, kept dense by add/delete/reorder).
+
+```ts
+type SheetMeta = { sheetId: SheetId; name: string; order: number };
+```
+
+### Structural path semantics (Wave 2)
+
+A `StructuralObservation` becomes a `StructuralDelta` applied as a **coordinate remap** of the Shadow State (insert opens blank space and shifts cells down/right; delete removes the spanned cells and shifts the rest up/left). Per ADR-0001 it emits **no value diff** (a structural op is a coordinate transform, not a value change), and per ADR-0003 it **never rewrites formula text** — cell formulas are opaque strings the engine only relocates, never edits. Forward apply is deterministic (needed for replay). The `unsupportedKind` `IngestDiagnostic` code is now unreachable for `structural`/`worksheet`/`value`; it is retained for any future un-handled kind.
+
 

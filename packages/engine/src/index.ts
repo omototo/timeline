@@ -58,7 +58,7 @@ export type { TimelineEngine } from './engine.ts';
 export { TimelineEngineImpl, type IngestDiagnostic } from './timeline-engine.ts';
 
 // Shadow State — in-memory workbook mirror (ADR-0001).
-export { ShadowState, type ChangedCell } from './shadow-state.ts';
+export { ShadowState, type ChangedCell, type SheetMeta } from './shadow-state.ts';
 
 // Persistence-seam ports.
 export type { HistoryStore, WorkbookStamp, WorkbookStampData } from './ports.ts';

@@ -19,9 +19,11 @@ import type {
   CellState,
   Rect,
   SheetId,
+  StructuralDelta,
   ValueDelta,
   ValueObservation,
   ValueType,
+  WorksheetDelta,
 } from './types.ts';
 
 /** A changed cell: its absolute address plus before/after lossless state. */
@@ -38,6 +40,19 @@ const EMPTY_CELL: CellState = {
   valueType: 'empty',
   numberFormat: 'General',
 };
+
+/**
+ * Per-sheet metadata mirrored alongside the cell map: the sheet's display
+ * `name` and its `order` (left-to-right tab position). Tracked so the engine
+ * can replay {@link WorksheetDelta}s (add/delete/rename/reorder — ADR-0005)
+ * deterministically. The `sheetId` is the stable key (a sheet keeps its id
+ * across a rename); `name` is the human-facing label.
+ */
+export interface SheetMeta {
+  sheetId: SheetId;
+  name: string;
+  order: number;
+}
 
 /** Coordinate key for the per-sheet cell map: `"row,col"`. */
 type CellKey = string;
@@ -77,6 +92,8 @@ function emptyCell(): CellState {
 export class ShadowState {
   /** sheetId -> ("row,col" -> CellState). */
   readonly #sheets = new Map<SheetId, Map<CellKey, CellState>>();
+  /** sheetId -> sheet metadata (name + tab order), for Worksheet Deltas. */
+  readonly #sheetMeta = new Map<SheetId, SheetMeta>();
 
   /** The cell map for a sheet, creating it on first write. */
   #sheet(sheetId: SheetId): Map<CellKey, CellState> {
@@ -161,6 +178,116 @@ export class ShadowState {
   }
 
   /**
+   * Apply a {@link StructuralDelta} forward into the mirror as a COORDINATE
+   * REMAP (ADR-0001). A structural op is a coordinate transform, not a value
+   * change: an insert opens blank space and shifts existing cells down/right;
+   * a delete removes the spanned cells and shifts the rest up/left.
+   *
+   * Cell formulas are opaque strings — this NEVER rewrites formula-text
+   * references (that is Excel's job — ADR-0003); it only moves whole
+   * {@link CellState}s to new coordinates. Deterministic (needed for replay).
+   *
+   * Row/column ops span the full sheet on the orthogonal axis. Cell ops are
+   * bounded to the address rectangle's rows (for a left/right shift) or columns
+   * (for an up/down shift); the `shiftDirection` disambiguates.
+   */
+  applyStructural(delta: StructuralDelta): void {
+    const sheet = this.#sheets.get(delta.sheetId);
+    if (sheet === undefined) return; // nothing to move on an untouched sheet
+
+    const remapped = new Map<CellKey, CellState>();
+    for (const [key, st] of sheet) {
+      const parsed = parseCellKey(key);
+      const moved = remapCoordinate(delta, parsed.row, parsed.col);
+      // `null` => the cell was deleted (it lived in the removed span).
+      if (moved !== null) {
+        remapped.set(cellKey(moved.row, moved.col), st);
+      }
+    }
+    this.#sheets.set(delta.sheetId, remapped);
+  }
+
+  /**
+   * Apply a {@link WorksheetDelta} forward into the sheet-metadata map
+   * (ADR-0005). `add` registers a new sheet; `delete` drops it and its cells;
+   * `rename` updates the display name (id is stable); `reorder` moves the tab
+   * to `newPosition`, re-packing the surrounding `order` values. Deterministic.
+   */
+  applyWorksheet(delta: WorksheetDelta): void {
+    switch (delta.op) {
+      case 'add': {
+        // Append at the end first, then (if a position was given) move it into
+        // place so an explicit `newPosition` actually re-packs the neighbours.
+        this.#sheetMeta.set(delta.sheetId, {
+          sheetId: delta.sheetId,
+          name: delta.newName ?? delta.sheetId,
+          order: this.#sheetMeta.size,
+        });
+        this.#repackOrder();
+        if (delta.newPosition !== undefined) {
+          this.#reorderSheet(delta.sheetId, delta.newPosition);
+        }
+        return;
+      }
+      case 'delete': {
+        this.#sheetMeta.delete(delta.sheetId);
+        this.#sheets.delete(delta.sheetId);
+        this.#repackOrder();
+        return;
+      }
+      case 'rename': {
+        const existing = this.#sheetMeta.get(delta.sheetId);
+        const name = delta.newName ?? existing?.name ?? delta.sheetId;
+        const order = existing?.order ?? this.#sheetMeta.size;
+        this.#sheetMeta.set(delta.sheetId, { sheetId: delta.sheetId, name, order });
+        return;
+      }
+      case 'reorder': {
+        const existing = this.#sheetMeta.get(delta.sheetId);
+        if (existing === undefined || delta.newPosition === undefined) return;
+        this.#reorderSheet(delta.sheetId, delta.newPosition);
+        return;
+      }
+    }
+  }
+
+  /** Sheet metadata for a sheet, or `undefined` if untracked. */
+  sheetMeta(sheetId: SheetId): SheetMeta | undefined {
+    const meta = this.#sheetMeta.get(sheetId);
+    return meta === undefined ? undefined : { ...meta };
+  }
+
+  /** All tracked sheets in tab order (defensive copies). */
+  sheets(): SheetMeta[] {
+    return [...this.#sheetMeta.values()].sort((a, b) => a.order - b.order).map((m) => ({ ...m }));
+  }
+
+  /**
+   * Move `sheetId` to `newPosition` and re-pack every sheet's `order` to a
+   * dense 0-based sequence in the resulting tab order.
+   */
+  #reorderSheet(sheetId: SheetId, newPosition: number): void {
+    const ordered = [...this.#sheetMeta.values()].sort((a, b) => a.order - b.order);
+    const fromIndex = ordered.findIndex((m) => m.sheetId === sheetId);
+    if (fromIndex === -1) return;
+    const [moved] = ordered.splice(fromIndex, 1);
+    if (moved === undefined) return;
+    const clamped = Math.max(0, Math.min(newPosition, ordered.length));
+    ordered.splice(clamped, 0, moved);
+    ordered.forEach((m, i) => {
+      this.#sheetMeta.set(m.sheetId, { ...m, order: i });
+    });
+  }
+
+  /** Re-pack `order` to a dense 0-based sequence preserving relative order. */
+  #repackOrder(): void {
+    const ordered = [...this.#sheetMeta.values()].sort((a, b) => a.order - b.order);
+    ordered.forEach((m, i) => {
+      this.#sheetMeta.set(m.sheetId, { ...m, order: i });
+    });
+  }
+
+  /**
    * Build a {@link CellSlab} of the current mirror over an {@link Area}.
    *
    * Used to materialize "currently-projected" state for reconcile plans and
@@ -199,6 +326,104 @@ export class ShadowState {
   cellCount(sheetId: SheetId): number {
     return this.#sheets.get(sheetId)?.size ?? 0;
   }
+}
+
+/** Parse a `"row,col"` {@link CellKey} back into numeric coordinates. */
+function parseCellKey(key: CellKey): { row: number; col: number } {
+  const comma = key.indexOf(',');
+  return {
+    row: Number(key.slice(0, comma)),
+    col: Number(key.slice(comma + 1)),
+  };
+}
+
+/**
+ * Remap a single cell coordinate under a {@link StructuralDelta}.
+ *
+ * Returns the new `(row, col)`, or `null` if the cell was deleted (it lived in
+ * the removed span). Row/column ops are sheet-wide on the orthogonal axis; cell
+ * ops are bounded to the address rectangle on the orthogonal axis and shift in
+ * the `shiftDirection`.
+ */
+function remapCoordinate(
+  delta: StructuralDelta,
+  row: number,
+  col: number,
+): { row: number; col: number } | null {
+  const { address } = delta;
+  switch (delta.changeType) {
+    case 'rowInserted':
+      // Open `rowCount` blank rows at `startRow`: rows at/after shift down.
+      return row >= address.startRow ? { row: row + address.rowCount, col } : { row, col };
+    case 'rowDeleted': {
+      const end = address.startRow + address.rowCount;
+      if (row >= address.startRow && row < end) return null; // in removed span
+      return row >= end ? { row: row - address.rowCount, col } : { row, col };
+    }
+    case 'columnInserted':
+      return col >= address.startCol ? { row, col: col + address.colCount } : { row, col };
+    case 'columnDeleted': {
+      const end = address.startCol + address.colCount;
+      if (col >= address.startCol && col < end) return null;
+      return col >= end ? { row, col: col - address.colCount } : { row, col };
+    }
+    case 'cellInserted':
+      return remapCellInserted(delta, row, col);
+    case 'cellDeleted':
+      return remapCellDeleted(delta, row, col);
+  }
+}
+
+/** Does a coordinate fall within the address rectangle's rows? */
+function inRows(address: Rect, row: number): boolean {
+  return row >= address.startRow && row < address.startRow + address.rowCount;
+}
+
+/** Does a coordinate fall within the address rectangle's columns? */
+function inCols(address: Rect, col: number): boolean {
+  return col >= address.startCol && col < address.startCol + address.colCount;
+}
+
+/** Insert a block of cells, shifting `down` (default) or `right`. */
+function remapCellInserted(
+  delta: StructuralDelta,
+  row: number,
+  col: number,
+): { row: number; col: number } {
+  const { address } = delta;
+  if (delta.shiftDirection === 'right') {
+    // Within the affected rows, cells at/after startCol shift right.
+    return inRows(address, row) && col >= address.startCol
+      ? { row, col: col + address.colCount }
+      : { row, col };
+  }
+  // Default 'down': within the affected columns, cells at/after startRow shift down.
+  return inCols(address, col) && row >= address.startRow
+    ? { row: row + address.rowCount, col }
+    : { row, col };
+}
+
+/** Delete a block of cells, shifting `up` (default) or `left`. */
+function remapCellDeleted(
+  delta: StructuralDelta,
+  row: number,
+  col: number,
+): { row: number; col: number } | null {
+  const { address } = delta;
+  if (delta.shiftDirection === 'left') {
+    // Within the affected rows, the spanned columns are removed and cells to
+    // the right shift left; rows outside the address are untouched.
+    if (!inRows(address, row)) return { row, col };
+    const end = address.startCol + address.colCount;
+    if (col >= address.startCol && col < end) return null; // removed
+    return col >= end ? { row, col: col - address.colCount } : { row, col };
+  }
+  // Default 'up': within the affected columns, the spanned rows are removed and
+  // cells below shift up.
+  if (!inCols(address, col)) return { row, col };
+  const end = address.startRow + address.rowCount;
+  if (row >= address.startRow && row < end) return null; // removed
+  return row >= end ? { row: row - address.rowCount, col } : { row, col };
 }
 
 /** Safe row access into a slab (noUncheckedIndexedAccess): missing -> `[]`. */

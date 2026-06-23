@@ -207,7 +207,7 @@ describe('TimelineEngineImpl.ingest — refusals & diagnostics', () => {
     engine = new TimelineEngineImpl();
   });
 
-  it('refuses a non-value Observation kind with a diagnostic (no Step)', () => {
+  it('records a structural Observation as a Step (Wave 2 — no diagnostic)', () => {
     const structural: StructuralObservation = {
       kind: 'structural',
       triggerSource: 'thisLocalAddin',
@@ -217,23 +217,8 @@ describe('TimelineEngineImpl.ingest — refusals & diagnostics', () => {
       address: cellRect(0, 0),
     };
     const env = engine.ingest(structural);
-    expect(env).toEqual({});
-    expect(engine.steps()).toHaveLength(0);
-    expect(engine.lastDiagnostic()?.code).toBe('unsupportedKind');
-  });
-
-  it('clears the last diagnostic on a subsequent successful ingest', () => {
-    engine.ingest({
-      kind: 'structural',
-      triggerSource: 'thisLocalAddin',
-      source: 'local',
-      sheetId: 'Sheet1',
-      changeType: 'rowInserted',
-      address: cellRect(0, 0),
-    });
-    expect(engine.lastDiagnostic()).not.toBeNull();
-
-    engine.ingest(valueObs('Sheet1', [cellRect(0, 0)], [[state({ value: 'ok' })]]));
+    expect(env.persist).toHaveLength(2);
+    expect(engine.steps()).toHaveLength(1);
     expect(engine.lastDiagnostic()).toBeNull();
   });
 });
