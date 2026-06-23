@@ -1,0 +1,77 @@
+/**
+ * The echo-cancellation seam (ADR-0002).
+ *
+ * Every write the RenderTarget makes registers an "expected write" here; the
+ * OfficeChangeSource consults it to swallow its own write-echoes on hosts below
+ * ExcelApi 1.14 (where `triggerSource === 'ThisLocalAddin'` is unavailable).
+ *
+ * At 1.14+ the `triggerSource` signal is authoritative and this set is unused
+ * for echo filtering — but the RenderTarget registers regardless so the choke
+ * point behaves identically across host versions.
+ *
+ * A registration is keyed by `sheetId` + A1 address and expires after a window,
+ * because the async ordering of our write-echo vs. the guard clear is itself a
+ * Stream D spike (findings §A9): we cannot assume a synchronous clear is safe.
+ */
+
+/** A pending self-write whose `onChanged` echo should be dropped. */
+interface PendingWrite {
+  expiresAt: number;
+}
+
+/** Injectable clock so tests stay deterministic. */
+export type Now = () => number;
+
+export class ExpectedWriteSet {
+  readonly #pending = new Map<string, PendingWrite>();
+  readonly #now: Now;
+  /** How long a registration stays live. */
+  // TODO(spike): tune via echo-arrival-timing spike (findings §A9, ADR-0002).
+  readonly #windowMs: number;
+
+  constructor(options: { windowMs?: number; now?: Now } = {}) {
+    this.#windowMs = options.windowMs ?? 1000;
+    this.#now = options.now ?? Date.now;
+  }
+
+  static #key(sheetId: string, address: string): string {
+    return `${sheetId} ${address.toUpperCase()}`;
+  }
+
+  /** Register a write the RenderTarget is about to make at `address` on `sheetId`. */
+  register(sheetId: string, address: string): void {
+    this.#pending.set(ExpectedWriteSet.#key(sheetId, address), {
+      expiresAt: this.#now() + this.#windowMs,
+    });
+  }
+
+  /**
+   * True if an unexpired self-write is registered for this region. Consumes the
+   * registration on a match so a later genuine user edit at the same address is
+   * not also swallowed.
+   */
+  consume(sheetId: string, address: string): boolean {
+    const key = ExpectedWriteSet.#key(sheetId, address);
+    const hit = this.#pending.get(key);
+    if (hit === undefined) {
+      return false;
+    }
+    this.#pending.delete(key);
+    return hit.expiresAt >= this.#now();
+  }
+
+  /** Drop expired registrations (called opportunistically; keeps the map bounded). */
+  prune(): void {
+    const now = this.#now();
+    for (const [key, write] of this.#pending) {
+      if (write.expiresAt < now) {
+        this.#pending.delete(key);
+      }
+    }
+  }
+
+  /** Test/inspection aid: number of live registrations. */
+  get size(): number {
+    return this.#pending.size;
+  }
+}
