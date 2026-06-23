@@ -406,6 +406,41 @@ describe('attach — clean resume vs drift (ADR-0006)', () => {
     expect(engine.readShadow('Sheet1', 0, 0).valueType).toBe('empty');
   });
 
+  it('drift with a persisted PREVIEW head lands in Present and keeps ingest usable', () => {
+    // A persisted preview head is reachable: goto emits a preview setHead the
+    // shell persists and reloads into attach. A drift reconciliation is a
+    // Present-mode history mutation, so attach must force Present — otherwise the
+    // Reconciliation Step is appended under a stale preview head and the next
+    // ingest is permanently refused with `ingestInPreview` (Wave 4 regression).
+    const engine = new TimelineEngineImpl();
+    setCell(engine, 'Sheet1', 0, 0, 'old');
+
+    const observed = snapshot('drifted', [
+      { sheetId: 'Sheet1', rows: [[state({ value: 'new' })]] },
+    ]);
+    const persisted: PersistedHead = {
+      head: { branchId: 'main', mode: 'preview', previewStepIndex: 0 },
+      tipHash: 'tip-pre-drift',
+    };
+
+    const env = engine.attach(observed, persisted);
+
+    // HEAD lands in Present (no stale previewStepIndex).
+    expect(engine.head()).toEqual({ branchId: 'main', mode: 'present' });
+
+    // The Reconciliation Step was appended in Present, and the emitted setHead is
+    // a consistent Present head (no previewStepIndex pointing before the Step).
+    expect(persistOpsOf(env, 'appendDelta')).toHaveLength(1);
+    const setHead = persistOpsOf(env, 'setHead')[0];
+    expect(setHead?.head).toEqual({ branchId: 'main', mode: 'present' });
+
+    // The next ingest is ACCEPTED (not refused with ingestInPreview) and records.
+    const next = setCell(engine, 'Sheet1', 1, 1, 'tracked');
+    expect(engine.lastDiagnostic()).toBeNull();
+    expect(persistOpsOf(next, 'appendDelta')).toHaveLength(1);
+    expect(engine.readShadow('Sheet1', 1, 1).value).toBe('tracked');
+  });
+
   it('clears co-authoring suspension on a clean re-attach', () => {
     const engine = new TimelineEngineImpl();
     engine.detachToCoauthoring();

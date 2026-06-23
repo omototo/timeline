@@ -484,7 +484,14 @@ export class TimelineEngineImpl implements TimelineEngine {
     // "after"), append it as a Reconciliation Step, and advance the mirror.
     const perSheet = this.#computeDriftDiff(observed);
     const delta: ReconciliationDelta = { kind: 'reconciliation', perSheet };
-    this.#head = restoreHead(persisted.head);
+    // A drift reconciliation is a Present-mode history mutation: restore the
+    // branch from the persisted head but FORCE Present mode. A persisted PREVIEW
+    // head is reachable (goto emits a preview setHead the shell persists), and
+    // appending the Reconciliation Step under a stale preview head would emit an
+    // inconsistent preview setHead (its previewStepIndex now points BEFORE the
+    // just-appended Step) and leave the engine stuck refusing the next ingest
+    // with `ingestInPreview`. Landing in Present keeps tracking usable.
+    this.#head = { branchId: restoreHead(persisted.head).branchId, mode: 'present' };
     const envelope = this.#recordStep(delta, () => {
       this.#shadow = snapshotToShadow(observed);
     });
