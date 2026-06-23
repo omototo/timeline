@@ -4,8 +4,8 @@ import type {
   TimelineCommand,
   TimelineHead,
   TimelineView,
-} from './contract';
-import { sampleTimeline } from './sample-timeline';
+} from './contract.ts';
+import { sampleTimeline } from './sample-timeline.ts';
 
 /**
  * The seam between the UI and its data. The pane renders whatever `getView()`
@@ -24,10 +24,11 @@ export interface TimelineDataSource {
 export class FakeTimelineDataSource implements TimelineDataSource {
   private view: TimelineView;
   private readonly listeners = new Set<() => void>();
-  private branchSeq = 0;
+  private branchSeq: number;
 
   constructor(initial: TimelineView = structuredClone(sampleTimeline)) {
     this.view = initial;
+    this.branchSeq = initial.branches.length;
   }
 
   getView(): TimelineView {
@@ -57,6 +58,12 @@ export class FakeTimelineDataSource implements TimelineDataSource {
       case 'branch':
         this.forkBranch(command.from.branchId, command.from.stepIndex);
         return;
+      case 'renameBranch':
+        this.renameBranch(command.branchId, command.name);
+        return;
+      case 'deleteBranch':
+        this.deleteBranch(command.branchId);
+        return;
     }
   }
 
@@ -80,6 +87,47 @@ export class FakeTimelineDataSource implements TimelineDataSource {
       ...this.view,
       branches: [...this.view.branches, branch],
       head: { branchId: id, mode: 'present' },
+    };
+    this.emit();
+  }
+
+  private renameBranch(branchId: BranchId, name: string): void {
+    const trimmed = name.trim();
+    if (trimmed.length === 0) return;
+
+    const current = this.view.branches.find((branch) => branch.id === branchId);
+    if (!current || current.name === trimmed) return;
+
+    const branches = this.view.branches.map((branch) => {
+      if (branch.id !== branchId || branch.name === trimmed) return branch;
+      return { ...branch, name: trimmed };
+    });
+
+    this.view = { ...this.view, branches };
+    this.emit();
+  }
+
+  private deleteBranch(branchId: BranchId): void {
+    if (branchId === 'main') return;
+
+    const deleted = this.view.branches.find((branch) => branch.id === branchId);
+    if (!deleted) return;
+
+    const branches = this.view.branches.filter((branch) => branch.id !== branchId);
+    const fallbackBranchId =
+      deleted.parentBranchId && branches.some((branch) => branch.id === deleted.parentBranchId)
+        ? deleted.parentBranchId
+        : branches[0]?.id;
+
+    if (!fallbackBranchId) return;
+
+    this.view = {
+      ...this.view,
+      branches,
+      head:
+        this.view.head.branchId === branchId
+          ? { branchId: fallbackBranchId, mode: 'present' }
+          : this.view.head,
     };
     this.emit();
   }
