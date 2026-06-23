@@ -3,21 +3,9 @@ name: Claude Code Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -32,14 +20,20 @@ jobs:
           fetch-depth: 1
 
       - name: Run Claude Code Review
-        id: claude-review
         uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # Use Opus for reviews (not the default Sonnet).
-          claude_args: '--model opus'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          # Direct prompt (no /code-review plugin — it errors on our tsc -b project references).
+          claude_args: '--model opus --allowedTools "Bash(gh:*)"'
+          prompt: |
+            Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+
+            1. Run `gh pr diff ${{ github.event.pull_request.number }}` to read the changes.
+            2. Review for correctness and bugs, the engine-purity rule (no Office.js / DOM / React
+               under `packages/engine`), and the base rules in `CONTRIBUTING.md`.
+            3. Post your review as ONE concise PR comment by running:
+               `gh pr comment ${{ github.event.pull_request.number }} --body "..."`
+               Lead with a one-line verdict, then bullet any issues (or confirm it looks good).
+               Always post a comment.
