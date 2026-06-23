@@ -51,7 +51,9 @@ export type TimelineCommand =
   | { type: 'goto'; ref: StepRef }
   | { type: 'returnToPresent' }
   | { type: 'branch'; from: StepRef }
-  | { type: 'switch'; branchId: BranchId };
+  | { type: 'switch'; branchId: BranchId }
+  | { type: 'renameBranch'; branchId: BranchId; name: string }
+  | { type: 'deleteBranch'; branchId: BranchId };
 
 export interface TimelinePaneProps {
   view: TimelineView;
