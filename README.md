@@ -33,6 +33,45 @@ ADR-0001 requires the engine to stay free of Office.js and the DOM. This is enfo
 | `bun run test:cov`                | Vitest with v8 coverage (80% thresholds). |
 | `bun run build`                   | Typecheck + build the addin with Vite.    |
 
+## Run It In Excel
+
+The task pane runs against the fake timeline data source for local demos. The
+manifest targets `https://localhost:9588/index.html`, so the dev server must use
+the trusted Office localhost certificate.
+
+1. Install and trust the Office dev certificate:
+
+   ```sh
+   bun run --filter @timeline/addin certs
+   ```
+
+2. Sideload in Excel desktop:
+
+   ```sh
+   bun run --filter @timeline/addin sideload
+   ```
+
+   This starts the HTTPS Vite dev server on port 9588 and loads the manifest
+   into Excel desktop. Use `bun run --filter @timeline/addin start` when you
+   want the Office debugging session, and `bun run --filter @timeline/addin stop`
+   to remove the sideloaded add-in registration when finished.
+
+3. Run the pane in a plain browser or prepare Excel on the web:
+
+   ```sh
+   bun run --filter @timeline/addin dev
+   ```
+
+4. Sideload in Excel on the web:
+
+   - Open a workbook in Excel on the web.
+   - Choose **Home** → **Add-ins** → **More Add-ins** → **Upload My Add-in**.
+   - Upload `packages/addin/manifest.xml` while the dev server is running.
+
+The add-in waits for `Office.onReady` inside Excel and falls back to the same
+fake-backed pane in a plain browser. Excel's `officeTheme` is mapped to the
+pane's `light`/`dark` theme prop at bootstrap.
+
 ## Conventions
 
 - TypeScript strict (strictest practical flags — see `docs/engineering-standards.md`).
