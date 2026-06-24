@@ -12,6 +12,24 @@ export type TimelineTheme = 'light' | 'dark';
 
 export type StepKind = 'value' | 'structural' | 'worksheet' | 'reconciliation';
 
+/** The specific operation a Step represents — drives its timeline icon. */
+export type TimelineOp =
+  | 'edit'
+  | 'formula'
+  | 'paste'
+  | 'clear'
+  | 'insert-row'
+  | 'delete-row'
+  | 'insert-col'
+  | 'delete-col'
+  | 'insert-cells'
+  | 'delete-cells'
+  | 'sheet-add'
+  | 'sheet-delete'
+  | 'sheet-rename'
+  | 'sheet-reorder'
+  | 'reconcile';
+
 export interface StepRef {
   branchId: BranchId;
   stepIndex: number;
@@ -20,6 +38,8 @@ export interface StepRef {
 export interface TimelineStep {
   index: number;
   kind: StepKind;
+  /** The specific operation — drives the step's timeline icon. */
+  op: TimelineOp;
   /** Bar height in the histogram: cells changed for value steps, op-weight otherwise. */
   magnitude: number;
   sheetId: SheetId;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BranchMeta, Head, TimelineView as EngineTimelineView } from '@timeline/engine';
-import { stepLabel, translateView } from '../src/ui/translate-view.ts';
+import { opLabel, translateView } from '../src/ui/translate-view.ts';
 
 const main: BranchMeta = { id: 'main', order: 0, provisional: false, name: 'main' };
 const fork: BranchMeta = {
@@ -19,9 +19,14 @@ describe('translateView', () => {
   it('nests Steps under their branch, ordered by step index, in tab order', () => {
     const view = translateView(
       engineView([
-        { ref: { branchId: 'main', stepIndex: 1 }, kind: 'value', magnitude: 3 },
-        { ref: { branchId: 'main', stepIndex: 0 }, kind: 'value', magnitude: 1 },
-        { ref: { branchId: 'fork-1', stepIndex: 0 }, kind: 'structural', magnitude: 1 },
+        { ref: { branchId: 'main', stepIndex: 1 }, kind: 'value', op: 'edit', magnitude: 3 },
+        { ref: { branchId: 'main', stepIndex: 0 }, kind: 'value', op: 'edit', magnitude: 1 },
+        {
+          ref: { branchId: 'fork-1', stepIndex: 0 },
+          kind: 'structural',
+          op: 'insert-row',
+          magnitude: 1,
+        },
       ]),
       { branchId: 'main', mode: 'present' },
     );
@@ -36,15 +41,18 @@ describe('translateView', () => {
     expect(view.branches[1]?.forkedAt).toEqual({ branchId: 'main', stepIndex: 2 });
   });
 
-  it('carries magnitude and a synthesized label/kind onto each Step', () => {
+  it('carries magnitude, op, and an op-derived label onto each Step', () => {
     const view = translateView(
-      engineView([{ ref: { branchId: 'main', stepIndex: 0 }, kind: 'value', magnitude: 1000 }]),
+      engineView([
+        { ref: { branchId: 'main', stepIndex: 0 }, kind: 'value', op: 'paste', magnitude: 1000 },
+      ]),
       { branchId: 'main', mode: 'present' },
     );
     const step = view.branches[0]?.steps[0];
     expect(step?.magnitude).toBe(1000);
     expect(step?.kind).toBe('value');
-    expect(step?.label).toBe('1000 cells');
+    expect(step?.op).toBe('paste');
+    expect(step?.label).toBe('Pasted / filled · 1000 cells');
   });
 
   it('maps the head, preserving preview index only in preview', () => {
@@ -64,12 +72,12 @@ describe('translateView', () => {
   });
 });
 
-describe('stepLabel', () => {
-  it('reads naturally per kind, singular/plural aware', () => {
-    expect(stepLabel('value', 1)).toBe('1 cell');
-    expect(stepLabel('value', 42)).toBe('42 cells');
-    expect(stepLabel('reconciliation', 7)).toBe('reconciled 7 cells');
-    expect(stepLabel('structural', 1)).toBe('structural change');
-    expect(stepLabel('worksheet', 1)).toBe('worksheet change');
+describe('opLabel', () => {
+  it('reads as an operation + how much, singular/plural aware', () => {
+    expect(opLabel('edit', 1)).toBe('Edited values · 1 cell');
+    expect(opLabel('formula', 1)).toBe('Entered a formula · 1 cell');
+    expect(opLabel('insert-row', 1)).toBe('Inserted row · 1 cell');
+    expect(opLabel('sheet-add', 1)).toBe('Added sheet · 1 cell');
+    expect(opLabel('reconcile', 42)).toBe('Reconciled outside changes · 42 cells');
   });
 });

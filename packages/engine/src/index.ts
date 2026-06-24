@@ -51,6 +51,7 @@ export type {
   TimelineQuery,
   TimelineView,
   StepDetail,
+  StepOp,
 } from './types.ts';
 
 // Engine interface.
@@ -61,6 +62,7 @@ export type { TimelineEngine } from './engine.ts';
 export {
   TimelineEngineImpl,
   stepMagnitude,
+  stepOperation,
   stepFormulaCells,
   type IngestDiagnostic,
   type TimelineEngineOptions,

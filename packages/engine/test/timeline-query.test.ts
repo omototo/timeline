@@ -121,6 +121,7 @@ describe('TimelineEngineImpl.timeline — histogram magnitudes', () => {
     expect(view.steps[0]).toEqual({
       ref: { branchId: 'main', stepIndex: 0 },
       kind: 'value',
+      op: 'edit',
       magnitude: 1,
     });
   });
@@ -151,6 +152,7 @@ describe('TimelineEngineImpl.timeline — histogram magnitudes', () => {
     expect(view.steps[1]).toEqual({
       ref: { branchId: 'main', stepIndex: 1 },
       kind: 'structural',
+      op: 'insert-row',
       magnitude: 1,
     });
   });
@@ -169,6 +171,7 @@ describe('TimelineEngineImpl.timeline — histogram magnitudes', () => {
     expect(view.steps[0]).toEqual({
       ref: { branchId: 'main', stepIndex: 0 },
       kind: 'worksheet',
+      op: 'sheet-add',
       magnitude: 1,
     });
   });
