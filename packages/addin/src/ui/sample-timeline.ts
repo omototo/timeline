@@ -1,4 +1,30 @@
-import type { SheetId, StepKind, TimelineStep, TimelineView } from './contract.ts';
+import type { SheetId, StepKind, TimelineOp, TimelineStep, TimelineView } from './contract.ts';
+
+const STRUCTURAL_OPS: TimelineOp[] = [
+  'insert-row',
+  'delete-row',
+  'insert-col',
+  'delete-col',
+  'insert-cells',
+  'delete-cells',
+];
+const WORKSHEET_OPS: TimelineOp[] = ['sheet-add', 'sheet-rename', 'sheet-reorder', 'sheet-delete'];
+
+function opFor(index: number, kind: StepKind, magnitude: number): TimelineOp {
+  switch (kind) {
+    case 'reconciliation':
+      return 'reconcile';
+    case 'structural':
+      return STRUCTURAL_OPS[index % STRUCTURAL_OPS.length] ?? 'insert-row';
+    case 'worksheet':
+      return WORKSHEET_OPS[index % WORKSHEET_OPS.length] ?? 'sheet-add';
+    case 'value':
+      if (magnitude >= 8) return 'paste';
+      if (index % 6 === 0) return 'clear';
+      if (index % 3 === 0) return 'formula';
+      return 'edit';
+  }
+}
 
 const SHEETS: SheetId[] = ['Sheet1', 'Assumptions', 'Summary', 'Model'];
 const FALLBACK_SHEET: SheetId = 'Sheet1';
@@ -28,11 +54,13 @@ function labelFor(index: number, kind: StepKind): string {
 
 function step(index: number, sheetOffset = 0): TimelineStep {
   const kind = kindFor(index);
+  const magnitude = magnitudeFor(index);
   const sheetId = SHEETS[(index + sheetOffset) % SHEETS.length] ?? FALLBACK_SHEET;
   return {
     index,
     kind,
-    magnitude: magnitudeFor(index),
+    op: opFor(index, kind, magnitude),
+    magnitude,
     sheetId,
     label: labelFor(index, kind),
   };

@@ -40,7 +40,9 @@ import type {
   SheetDiff,
   SheetId,
   StepDetail,
+  StepOp,
   StepRef,
+  StructuralChangeType,
   StructuralDelta,
   StructuralObservation,
   TimelineQuery,
@@ -473,6 +475,7 @@ export class TimelineEngineImpl implements TimelineEngine {
         steps.push({
           ref: { branchId, stepIndex: step.stepIndex },
           kind: step.delta.kind,
+          op: stepOperation(step.delta),
           magnitude: stepMagnitude(step.delta),
         });
       }
@@ -1218,6 +1221,49 @@ export function stepMagnitude(delta: Delta): number {
     case 'structural':
     case 'worksheet':
       return 1;
+  }
+}
+
+/** A value edit at/above this many cells reads as a bulk paste/fill, not an edit. */
+const BULK_VALUE_CELLS = 8;
+
+const STRUCTURAL_OP: Record<StructuralChangeType, StepOp> = {
+  rowInserted: 'insert-row',
+  rowDeleted: 'delete-row',
+  columnInserted: 'insert-col',
+  columnDeleted: 'delete-col',
+  cellInserted: 'insert-cells',
+  cellDeleted: 'delete-cells',
+};
+
+const WORKSHEET_OP: Record<WorksheetDelta['op'], StepOp> = {
+  add: 'sheet-add',
+  delete: 'sheet-delete',
+  rename: 'sheet-rename',
+  reorder: 'sheet-reorder',
+};
+
+/**
+ * The specific {@link StepOp} a {@link Delta} represents — the operation icon the
+ * timeline shows. Structural/worksheet map straight from their op. A `value`
+ * Delta is classified from its cells: all-emptied is a **clear**, many cells is a
+ * **paste**, any new formula is a **formula**, else a literal **edit**.
+ */
+export function stepOperation(delta: Delta): StepOp {
+  switch (delta.kind) {
+    case 'value': {
+      const { cells } = delta;
+      if (cells.length > 0 && cells.every((c) => c.after.valueType === 'empty')) return 'clear';
+      if (cells.length >= BULK_VALUE_CELLS) return 'paste';
+      if (cells.some((c) => c.after.formula !== null)) return 'formula';
+      return 'edit';
+    }
+    case 'structural':
+      return STRUCTURAL_OP[delta.changeType];
+    case 'worksheet':
+      return WORKSHEET_OP[delta.op];
+    case 'reconciliation':
+      return 'reconcile';
   }
 }
 

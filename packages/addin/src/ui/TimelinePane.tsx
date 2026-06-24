@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react';
-import type { ChangeEvent, CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
+import { useState } from 'react';
+import type { ChangeEvent, CSSProperties } from 'react';
 import type {
   BranchId,
   StepKind,
@@ -8,6 +8,7 @@ import type {
   TimelineStep,
   TimelineTheme,
 } from './contract.ts';
+import { OperationIcon } from './OperationIcon.tsx';
 
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested directly — jsdom has no layout for pointer math).
@@ -106,58 +107,18 @@ export function TimelinePane({ view, dispatch, theme = 'light' }: TimelinePanePr
   const headIndex = currentStepIndex(branch, view.head.mode, view.head.previewStepIndex);
   const inPreview = view.head.mode === 'preview';
 
-  const [zoom, setZoom] = useState<{ start: number; end: number }>({ start: 0, end: lastIndex });
   const [hover, setHover] = useState<TimelineStep | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [sheetFilter, setSheetFilter] = useState<string>(ALL_SHEETS);
-  const trackRef = useRef<HTMLDivElement>(null);
-  const brushX0 = useRef<number | null>(null);
-  const [brushRect, setBrushRect] = useState<{ left: number; width: number } | null>(null);
 
-  const vs = Math.max(0, Math.min(zoom.start, lastIndex));
-  const ve = Math.max(vs, Math.min(zoom.end, lastIndex));
-  const span = Math.max(1, ve - vs);
-  const zoomed = vs > 0 || ve < lastIndex;
-  const visible = branch.steps.filter(
-    (s) =>
-      s.index >= vs && s.index <= ve && (sheetFilter === ALL_SHEETS || s.sheetId === sheetFilter),
-  );
+  const steps = branch.steps.filter((s) => sheetFilter === ALL_SHEETS || s.sheetId === sheetFilter);
   let maxMag = 1;
-  for (const s of visible) maxMag = Math.max(maxMag, s.magnitude);
-
-  const pctOf = (index: number): number => ((index - vs) / span) * 100;
-  const headInWindow = headIndex >= vs && headIndex <= ve;
-  const sliderValue = Math.max(vs, Math.min(ve, headIndex));
+  for (const s of steps) maxMag = Math.max(maxMag, s.magnitude);
+  const sliderValue = Math.max(0, Math.min(lastIndex, headIndex));
 
   const scrubTo = (index: number): void => {
     if (index >= lastIndex) dispatch({ type: 'returnToPresent' });
     else dispatch({ type: 'goto', ref: { branchId: branch.id, stepIndex: index } });
-  };
-  const resetZoom = (): void => {
-    setZoom({ start: 0, end: lastIndex });
-  };
-
-  // Grafana brush-zoom over the bars (mouse enhancement; keyboard users scrub via the range + Reset button).
-  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
-    const rect = trackRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    brushX0.current = e.clientX - rect.left;
-    setBrushRect({ left: brushX0.current, width: 0 });
-  };
-  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>): void => {
-    const rect = trackRef.current?.getBoundingClientRect();
-    if (!rect || brushX0.current === null) return;
-    const x = e.clientX - rect.left;
-    setBrushRect({ left: Math.min(brushX0.current, x), width: Math.abs(x - brushX0.current) });
-  };
-  const onPointerUp = (e: ReactPointerEvent<HTMLDivElement>): void => {
-    const rect = trackRef.current?.getBoundingClientRect();
-    setBrushRect(null);
-    if (rect && brushX0.current !== null) {
-      const win = brushToWindow(brushX0.current, e.clientX - rect.left, rect.width, vs, ve);
-      if (win) setZoom(win);
-    }
-    brushX0.current = null;
   };
 
   const commitRename = (name: string): void => {
@@ -296,33 +257,26 @@ export function TimelinePane({ view, dispatch, theme = 'light' }: TimelinePanePr
         </select>
       </div>
 
-      {/* histogram (the hero) — drag across to zoom, double-click to reset */}
+      {/* operation-icon strip (the hero): icon = what, underline = how much */}
       <div
-        ref={trackRef}
-        className="timeline-bars"
-        aria-label={`Histogram of ${branch.name ?? branch.id}, steps ${String(vs)} to ${String(ve)}`}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onDoubleClick={resetZoom}
+        className="timeline-strip"
+        aria-label={`Operations on ${branch.name ?? branch.id}`}
         style={{
-          position: 'relative',
-          height: 96,
+          display: 'flex',
+          alignItems: 'flex-end',
+          gap: 2,
+          overflowX: 'auto',
+          padding: '8px 2px',
           borderBottom: `1px solid ${t.line ?? '#e5e7eb'}`,
-          touchAction: 'none',
-          cursor: 'crosshair',
+          minHeight: 72,
         }}
       >
-        {branch.steps.length === 0 ? (
+        {steps.length === 0 ? (
           <div
             style={{
-              position: 'absolute',
-              inset: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
+              flex: 1,
               textAlign: 'center',
-              padding: '0 16px',
+              padding: '14px 16px',
               color: t.muted ?? '#6b7280',
               fontSize: 12,
             }}
@@ -330,87 +284,77 @@ export function TimelinePane({ view, dispatch, theme = 'light' }: TimelinePanePr
             No tracked changes yet — edit a cell and it will appear here.
           </div>
         ) : null}
-        {visible.map((s) => (
-          <button
-            key={s.index}
-            type="button"
-            className="timeline-bar"
-            data-index={s.index}
-            data-kind={s.kind}
-            aria-label={`Step ${String(s.index)}: ${KIND_LABEL[s.kind]}, ${String(s.magnitude)} cells${s.label ? `, ${s.label}` : ''}`}
-            onClick={() => {
-              scrubTo(s.index);
-            }}
-            onMouseEnter={() => {
-              setHover(s);
-            }}
-            onFocus={() => {
-              setHover(s);
-            }}
-            onMouseLeave={() => {
-              setHover(null);
-            }}
-            onBlur={() => {
-              setHover(null);
-            }}
-            style={{
-              position: 'absolute',
-              bottom: 0,
-              left: `calc(${String(pctOf(s.index))}% - 5px)`,
-              width: 10,
-              height: barHeight(s.magnitude, maxMag, 86),
-              padding: 0,
-              border: 0,
-              borderRadius: '3px 3px 0 0',
-              background: KIND_COLOR[s.kind],
-              opacity: s.index > headIndex ? 0.28 : 1,
-              cursor: 'pointer',
-            }}
-          />
-        ))}
-        {headInWindow ? (
-          <div
-            aria-hidden
-            style={{
-              position: 'absolute',
-              top: -4,
-              bottom: 0,
-              left: `${String(pctOf(headIndex))}%`,
-              width: 2,
-              marginLeft: -1,
-              background: t.accent,
-              pointerEvents: 'none',
-            }}
-          >
-            <div
-              style={{
-                position: 'absolute',
-                top: -7,
-                left: -6,
-                width: 12,
-                height: 12,
-                borderRadius: '50%',
-                background: t.accent,
+        {steps.map((s) => {
+          const ahead = s.index > headIndex;
+          const isHead = s.index === headIndex;
+          return (
+            <button
+              key={s.index}
+              type="button"
+              className="timeline-step"
+              data-index={s.index}
+              data-kind={s.kind}
+              data-op={s.op}
+              data-mag={s.magnitude}
+              aria-current={isHead}
+              aria-label={`Step ${String(s.index)}: ${s.label ?? KIND_LABEL[s.kind]}`}
+              onClick={() => {
+                scrubTo(s.index);
               }}
-            />
-          </div>
-        ) : null}
-        {brushRect ? (
-          <div
-            aria-hidden
-            style={{
-              position: 'absolute',
-              top: 0,
-              bottom: 0,
-              left: brushRect.left,
-              width: brushRect.width,
-              background: 'rgba(147,164,255,0.18)',
-              borderLeft: '1px solid #93a4ff',
-              borderRight: '1px solid #93a4ff',
-              pointerEvents: 'none',
-            }}
-          />
-        ) : null}
+              onMouseEnter={() => {
+                setHover(s);
+              }}
+              onFocus={() => {
+                setHover(s);
+              }}
+              onMouseLeave={() => {
+                setHover(null);
+              }}
+              onBlur={() => {
+                setHover(null);
+              }}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 4,
+                flex: '0 0 30px',
+                padding: '2px 0',
+                border: 0,
+                borderRadius: 7,
+                cursor: 'pointer',
+                background: isHead ? `${KIND_COLOR[s.kind]}22` : 'transparent',
+              }}
+            >
+              <span
+                aria-hidden
+                style={{
+                  width: 22,
+                  height: 22,
+                  display: 'grid',
+                  placeItems: 'center',
+                  borderRadius: 6,
+                  color: KIND_COLOR[s.kind],
+                  background: `${KIND_COLOR[s.kind]}22`,
+                  border: `1px solid ${KIND_COLOR[s.kind]}59`,
+                  opacity: ahead ? 0.32 : 1,
+                }}
+              >
+                <OperationIcon op={s.op} />
+              </span>
+              <span
+                aria-hidden
+                style={{
+                  width: 16,
+                  height: barHeight(s.magnitude, maxMag, 22),
+                  borderRadius: '2px 2px 0 0',
+                  background: KIND_COLOR[s.kind],
+                  opacity: ahead ? 0.22 : 0.55,
+                }}
+              />
+            </button>
+          );
+        })}
       </div>
 
       {/* accessible scrubber: keyboard + screen-reader + the test surface for scrubbing */}
@@ -418,8 +362,8 @@ export function TimelinePane({ view, dispatch, theme = 'light' }: TimelinePanePr
         type="range"
         className="timeline-scrubber"
         aria-label="Timeline scrubber"
-        min={vs}
-        max={ve}
+        min={0}
+        max={lastIndex}
         step={1}
         value={sliderValue}
         onChange={(e: ChangeEvent<HTMLInputElement>) => {
@@ -430,10 +374,8 @@ export function TimelinePane({ view, dispatch, theme = 'light' }: TimelinePanePr
       <div
         style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: t.muted }}
       >
-        <span>Step {vs}</span>
-        <span>
-          {zoomed ? `viewing ${String(vs)}–${String(ve)} of ${String(lastIndex)}` : 'Present ▸'}
-        </span>
+        <span>Step 0</span>
+        <span>Present ▸</span>
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
@@ -458,11 +400,6 @@ export function TimelinePane({ view, dispatch, theme = 'light' }: TimelinePanePr
               Branch from here
             </button>
           </>
-        ) : null}
-        {zoomed ? (
-          <button type="button" onClick={resetZoom} style={btn(t)}>
-            ⤢ Reset zoom
-          </button>
         ) : null}
         {renaming ? (
           <input
@@ -542,14 +479,11 @@ export function TimelinePane({ view, dispatch, theme = 'light' }: TimelinePanePr
         {hover ? (
           <span>
             <strong>Step {hover.index}</strong>{' '}
-            <span style={{ color: t.muted }}>
-              · {KIND_LABEL[hover.kind]} · Δ {hover.magnitude.toLocaleString()} cells
-            </span>
-            {hover.label ? <span style={{ color: t.muted }}> · {hover.label}</span> : null}
+            <span style={{ color: t.muted }}>· {hover.label ?? KIND_LABEL[hover.kind]}</span>
           </span>
         ) : (
           <span style={{ color: t.muted }}>
-            {inPreview ? `Previewing step ${String(headIndex)}` : 'At present'} — hover a bar for
+            {inPreview ? `Previewing step ${String(headIndex)}` : 'At present'} — hover a step for
             details
           </span>
         )}

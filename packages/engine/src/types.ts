@@ -287,11 +287,39 @@ export interface TimelineQuery {
  * each with a per-Step `magnitude` (the histogram bar height — see
  * `stepMagnitude`).
  */
+/**
+ * The specific operation a Step represents — the granularity the timeline shows
+ * as an icon (Fusion-style), one level finer than `Delta['kind']`. Derived from
+ * the Delta by `stepOperation`.
+ */
+export type StepOp =
+  // value
+  | 'edit'
+  | 'formula'
+  | 'paste'
+  | 'clear'
+  // structural
+  | 'insert-row'
+  | 'delete-row'
+  | 'insert-col'
+  | 'delete-col'
+  | 'insert-cells'
+  | 'delete-cells'
+  // worksheet
+  | 'sheet-add'
+  | 'sheet-delete'
+  | 'sheet-rename'
+  | 'sheet-reorder'
+  // reconciliation
+  | 'reconcile';
+
 export interface TimelineView {
   branches: BranchMeta[];
   steps: {
     ref: StepRef;
     kind: Delta['kind'];
+    /** The specific operation, for the timeline's operation icon. */
+    op: StepOp;
     /** Bar magnitude for the histogram: value=cell count; structural/worksheet=1. */
     magnitude: number;
   }[];

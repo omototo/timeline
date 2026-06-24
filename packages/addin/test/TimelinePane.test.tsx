@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import {
   TimelinePane,
@@ -18,7 +18,6 @@ function viewWith(overrides: Partial<TimelineView>): TimelineView {
 }
 const previewMain = viewWith({ head: { branchId: 'main', mode: 'preview', previewStepIndex: 30 } });
 const onBranchB = viewWith({ head: { branchId: 'branch-b', mode: 'present' } });
-const px = (el: HTMLElement): number => parseInt(el.style.height, 10);
 
 describe('pure helpers', () => {
   it('barHeight grows with magnitude (log-scaled)', () => {
@@ -49,12 +48,14 @@ describe('pure helpers', () => {
 });
 
 describe('TimelinePane', () => {
-  it('renders a magnitude histogram — the 1,000-cell paste towers over a 1-cell edit', () => {
+  it('renders an operation icon per step, with the magnitude carried for the underline', () => {
     render(<TimelinePane view={sampleTimeline} dispatch={vi.fn()} />);
-    const tall = screen.getByRole('button', { name: /^Step 1:/ });
-    const short = screen.getByRole('button', { name: /^Step 0:/ });
-    expect(px(tall)).toBeGreaterThan(px(short));
-    expect(tall.dataset.kind).toBe('value');
+    const paste = screen.getByRole('button', { name: /^Step 1:/ });
+    const edit = screen.getByRole('button', { name: /^Step 0:/ });
+    // The 1,000-cell paste carries a larger magnitude than the 1-cell step.
+    expect(Number(paste.dataset.mag)).toBeGreaterThan(Number(edit.dataset.mag));
+    expect(paste.dataset.op).toBe('paste');
+    expect(paste.dataset.kind).toBe('value');
   });
 
   it('emits goto when the scrubber moves, returnToPresent at the tip', () => {
@@ -138,15 +139,10 @@ describe('TimelinePane', () => {
     expect(after).toBeGreaterThan(0);
   });
 
-  it('survives the brush gesture and double-click reset without dispatching scrub commands', () => {
-    const dispatch = vi.fn();
-    render(<TimelinePane view={sampleTimeline} dispatch={dispatch} />);
-    const track = screen.getByLabelText(/Histogram of/);
-    fireEvent.pointerDown(track, { clientX: 10 });
-    fireEvent.pointerMove(track, { clientX: 80 });
-    fireEvent.pointerUp(track, { clientX: 80 });
-    fireEvent.doubleClick(track);
-    expect(screen.getByLabelText(/Histogram of/)).toBeTruthy();
+  it('renders the steps as an operation strip', () => {
+    render(<TimelinePane view={sampleTimeline} dispatch={vi.fn()} />);
+    const strip = screen.getByLabelText(/Operations on/);
+    expect(within(strip).getAllByRole('button', { name: /^Step \d+:/ }).length).toBeGreaterThan(0);
   });
 
   it('shows a PREVIEW banner only while previewing, with an Exit preview action', () => {

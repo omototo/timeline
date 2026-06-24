@@ -65,6 +65,11 @@ function setCellsOps(env: EffectEnvelope): Extract<ReconcileOp, { op: 'setCells'
 
 const ref = (stepIndex: number): StepRef => ({ branchId: 'main', stepIndex });
 
+/** The operation of every recorded Step, in order (for stepOperation tests). */
+function engineOps(e: TimelineEngineImpl): string[] {
+  return e.timeline().steps.map((s) => s.op);
+}
+
 describe('Reconstruction — forward-replay (Wave 3)', () => {
   let engine: TimelineEngineImpl;
 
@@ -424,6 +429,45 @@ describe('returnToPresent (Wave 3)', () => {
     const env = engine.ingest(valueObs('Sheet1', [cellRect(2, 2)], [[state({ value: 'z' })]]));
     expect(env.persist?.some((p) => p.op === 'appendDelta')).toBe(true);
     expect(engine.readShadow('Sheet1', 2, 2).value).toBe('z');
+  });
+});
+
+describe('stepOperation — operation icon classification', () => {
+  it('classifies value edits from the delta contents', () => {
+    const e = new TimelineEngineImpl({ keyframeStepInterval: 1000, keyframeByteThreshold: 1e9 });
+    // literal single-cell edit
+    e.ingest(valueObs('Sheet1', [cellRect(0, 0)], [[state({ value: 'x' })]]));
+    // a formula
+    e.ingest(valueObs('Sheet1', [cellRect(1, 0)], [[state({ value: 1, formula: '=A1' })]]));
+    // a bulk paste (>= 8 cells)
+    const row = Array.from({ length: 9 }, (_, c) => state({ value: c }));
+    e.ingest(valueObs('Sheet1', [{ startRow: 2, startCol: 0, rowCount: 1, colCount: 9 }], [row]));
+    // clearing a populated cell
+    e.ingest(valueObs('Sheet1', [cellRect(0, 0)], [[state({ value: null, valueType: 'empty' })]]));
+
+    const ops = engineOps(e);
+    expect(ops).toEqual(['edit', 'formula', 'paste', 'clear']);
+  });
+
+  it('maps structural and worksheet ops one-to-one', () => {
+    const e = new TimelineEngineImpl({ keyframeStepInterval: 1000, keyframeByteThreshold: 1e9 });
+    e.ingest({
+      kind: 'structural',
+      sheetId: 'Sheet1',
+      changeType: 'rowInserted',
+      address: cellRect(3, 0),
+      triggerSource: 'unknown',
+      source: 'local',
+    });
+    e.ingest({
+      kind: 'worksheet',
+      op: 'rename',
+      sheetId: 'Sheet2',
+      newName: 'Renamed',
+      triggerSource: 'unknown',
+      source: 'local',
+    });
+    expect(engineOps(e)).toEqual(['insert-row', 'sheet-rename']);
   });
 });
 

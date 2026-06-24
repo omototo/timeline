@@ -13,23 +13,33 @@ import type {
   StepKind,
   TimelineBranch,
   TimelineHead,
+  TimelineOp,
   TimelineStep,
   TimelineView,
 } from './contract.ts';
 
-/** A short, human label for a Step, synthesized from its kind + magnitude. */
-export function stepLabel(kind: StepKind, magnitude: number): string {
+const OP_LABEL: Record<TimelineOp, string> = {
+  edit: 'Edited values',
+  formula: 'Entered a formula',
+  paste: 'Pasted / filled',
+  clear: 'Cleared content',
+  'insert-row': 'Inserted row',
+  'delete-row': 'Deleted row',
+  'insert-col': 'Inserted column',
+  'delete-col': 'Deleted column',
+  'insert-cells': 'Inserted cells',
+  'delete-cells': 'Deleted cells',
+  'sheet-add': 'Added sheet',
+  'sheet-delete': 'Deleted sheet',
+  'sheet-rename': 'Renamed sheet',
+  'sheet-reorder': 'Reordered sheet',
+  reconcile: 'Reconciled outside changes',
+};
+
+/** Human label for a Step, from its operation + how much it changed. */
+export function opLabel(op: TimelineOp, magnitude: number): string {
   const cells = `${String(magnitude)} cell${magnitude === 1 ? '' : 's'}`;
-  switch (kind) {
-    case 'value':
-      return cells;
-    case 'reconciliation':
-      return `reconciled ${cells}`;
-    case 'structural':
-      return 'structural change';
-    case 'worksheet':
-      return 'worksheet change';
-  }
+  return `${OP_LABEL[op]} · ${cells}`;
 }
 
 function toBranch(meta: BranchMeta, steps: TimelineStep[]): TimelineBranch {
@@ -68,12 +78,14 @@ export function translateView(
   const stepsByBranch = new Map<string, TimelineStep[]>();
   for (const step of engineView.steps) {
     const kind: StepKind = step.kind;
+    const op: TimelineOp = step.op;
     const uiStep: TimelineStep = {
       index: step.ref.stepIndex,
       kind,
+      op,
       magnitude: step.magnitude,
       sheetId: '',
-      label: stepLabel(kind, step.magnitude),
+      label: opLabel(op, step.magnitude),
     };
     const bucket = stepsByBranch.get(step.ref.branchId);
     if (bucket) {
