@@ -177,8 +177,12 @@ describe('goto — minimal value-mode preview diff (Wave 3)', () => {
     const env = engine.goto(ref(2));
     expect(env.reconcile?.target).toBe('previewSheet');
     const ops = env.reconcile?.ops ?? [];
+    // Surface created first; the user is anchored to it (activate emitted once
+    // surfaces settle, so it lands on the final preview sheet).
     expect(ops[0]).toEqual({ op: 'createPreviewSheet', previewSheetId: '__preview__::Sheet1' });
-    expect(ops[1]).toEqual({ op: 'activateSheet', sheetId: '__preview__::Sheet1' });
+    expect(ops).toContainEqual({ op: 'activateSheet', sheetId: '__preview__::Sheet1' });
+    // First entry flags the shell to hide the real sheets (full-workbook rollback).
+    expect(env.reconcile?.enterPreview).toBe(true);
     // Every cell op is value (Frozen Values, ADR-0008).
     for (const op of setCellsOps(env)) expect(op.mode).toBe('value');
     // HEAD flipped to preview.
@@ -274,8 +278,31 @@ describe('goto — minimal value-mode preview diff (Wave 3)', () => {
       )
       .map((o) => o.previewSheetId);
     expect(created).toEqual(['__preview__::Sheet2']);
-    // No re-activation on a non-first surface.
-    expect((env.reconcile?.ops ?? []).some((o) => o.op === 'activateSheet')).toBe(false);
+    // A scrub re-anchors the user to their sheet's preview (Sheet1 here), and is
+    // NOT a first entry, so it does not re-flag the shell to hide real sheets.
+    expect(env.reconcile?.ops).toContainEqual({
+      op: 'activateSheet',
+      sheetId: '__preview__::Sheet1',
+    });
+    expect(env.reconcile?.enterPreview ?? false).toBe(false);
+  });
+
+  it('multi-sheet: scrubbing before a sheet existed deletes its preview surface', () => {
+    const e = new TimelineEngineImpl({ keyframeStepInterval: 1000, keyframeByteThreshold: 1e9 });
+    e.ingest(valueObs('Sheet1', [cellRect(0, 0)], [[state({ value: 's1' })]])); // step 0
+    e.ingest(valueObs('Sheet2', [cellRect(0, 0)], [[state({ value: 's2' })]])); // step 1
+
+    e.goto(ref(1)); // surfaces: Sheet1 + Sheet2
+    const env = e.goto(ref(0)); // Sheet2 did not exist at step 0 -> drop its surface
+    const deleted = (env.reconcile?.ops ?? [])
+      .filter(
+        (o): o is Extract<ReconcileOp, { op: 'deletePreviewSheet' }> =>
+          o.op === 'deletePreviewSheet',
+      )
+      .map((o) => o.previewSheetId);
+    expect(deleted).toEqual(['__preview__::Sheet2']);
+    // No setCells targets the now-deleted Sheet2 surface.
+    expect(setCellsOps(env).every((o) => o.sheetId !== '__preview__::Sheet2')).toBe(true);
   });
 
   it('orders same-row cell ops left-to-right (column tie-break)', () => {

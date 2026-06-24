@@ -20,6 +20,7 @@ import { ExpectedWriteSet } from '../excel/expected-write-set.ts';
 import { databaseNameFor, IndexedDbStore } from '../excel/indexeddb-store.ts';
 import { OfficeChangeSource } from '../excel/office-change-source.ts';
 import type { ExcelRun, RequestContextLike, WorksheetLike } from '../excel/office-types.ts';
+import { OfficePreviewChrome } from '../excel/preview-chrome.ts';
 import { PreviewSheetRenderTarget, RealSheetRenderTarget } from '../excel/render-target.ts';
 import { buildWorkbookSnapshot } from '../excel/workbook-snapshot.ts';
 import { showErrorBanner } from './error-banner.ts';
@@ -104,6 +105,7 @@ export async function createRealTimelineDataSource(): Promise<RealTimelineDataSo
     realTarget,
     previewTarget,
     changeSource,
+    chrome: new OfficePreviewChrome(runShim),
     sheets: sheetIds,
     onError: (error) => {
       const message = error instanceof Error ? error.message : String(error);

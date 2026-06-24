@@ -118,4 +118,42 @@ describe('RealTimelineDataSource', () => {
     h.source.dispatch({ type: 'deleteBranch', branchId: 'main' });
     expect(h.source.getView().branches.map((b) => b.id)).toEqual(before.branches.map((b) => b.id));
   });
+
+  it('hides real sheets when entering preview and restores them on return (once each)', async () => {
+    const engine = new TimelineEngineImpl();
+    const store = new InMemoryStore();
+    const changeSource = new FakeChangeSource();
+    const chrome = { enters: 0, exits: 0 };
+    const source = new RealTimelineDataSource({
+      engine,
+      store,
+      realTarget: new RecordingRenderTarget(),
+      previewTarget: new RecordingRenderTarget(),
+      changeSource,
+      chrome: {
+        enter: () => {
+          chrome.enters += 1;
+          return Promise.resolve();
+        },
+        exit: () => {
+          chrome.exits += 1;
+          return Promise.resolve();
+        },
+      },
+    });
+    await source.start(engine.attach(emptySheet1, null));
+    changeSource.emit(edit(10));
+    changeSource.emit(edit(20));
+    const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+    source.dispatch({ type: 'goto', ref: { branchId: 'main', stepIndex: 0 } }); // enter
+    source.dispatch({ type: 'goto', ref: { branchId: 'main', stepIndex: 1 } }); // scrub
+    await tick();
+    expect(chrome.enters).toBe(1); // hidden once, not re-hidden on the scrub
+    expect(chrome.exits).toBe(0);
+
+    source.dispatch({ type: 'returnToPresent' });
+    await tick();
+    expect(chrome.exits).toBe(1); // restored once on return
+  });
 });

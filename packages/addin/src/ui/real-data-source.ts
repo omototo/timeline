@@ -15,6 +15,7 @@ import type {
   PersistOp,
   TimelineEngine,
 } from '@timeline/engine';
+import { NOOP_PREVIEW_CHROME, type PreviewChrome } from '../excel/preview-chrome.ts';
 import type { ChangeSource, RenderTarget } from '../excel/seams.ts';
 import type { SheetId, TimelineCommand, TimelineView } from './contract.ts';
 import type { TimelineDataSource } from './data-source.ts';
@@ -47,6 +48,8 @@ export interface RealTimelineDataSourceOptions {
   readonly realTarget: RenderTarget;
   readonly previewTarget: RenderTarget;
   readonly changeSource: ChangeSource;
+  /** Hides/restores real sheets around Preview (full-workbook rollback). */
+  readonly chrome?: PreviewChrome;
   /** The real workbook's worksheet ids, for the drill-down (empty = whole-workbook only). */
   readonly sheets?: SheetId[];
   /** Surfaced so the shell can log Excel write failures; defaults to a no-op. */
@@ -59,6 +62,7 @@ export class RealTimelineDataSource implements TimelineDataSource {
   readonly #realTarget: RenderTarget;
   readonly #previewTarget: RenderTarget;
   readonly #changeSource: ChangeSource;
+  readonly #chrome: PreviewChrome;
   readonly #sheets: SheetId[];
   readonly #onError: (error: unknown) => void;
   readonly #listeners = new Set<() => void>();
@@ -78,6 +82,7 @@ export class RealTimelineDataSource implements TimelineDataSource {
     this.#realTarget = options.realTarget;
     this.#previewTarget = options.previewTarget;
     this.#changeSource = options.changeSource;
+    this.#chrome = options.chrome ?? NOOP_PREVIEW_CHROME;
     this.#sheets = options.sheets ?? [];
     this.#onError = options.onError ?? (() => undefined);
   }
@@ -153,10 +158,18 @@ export class RealTimelineDataSource implements TimelineDataSource {
       for (const op of envelope.persist ?? []) {
         await applyPersistOp(this.#store, op);
       }
-      if (envelope.reconcile) {
-        const target =
-          envelope.reconcile.target === 'previewSheet' ? this.#previewTarget : this.#realTarget;
-        await target.reconcile(envelope.reconcile);
+      const plan = envelope.reconcile;
+      if (plan) {
+        // Hide the real sheets BEFORE the first preview plan creates surfaces, so
+        // only the historical view is visible; restore them AFTER the teardown.
+        if (plan.enterPreview) {
+          await this.#chrome.enter();
+        }
+        const target = plan.target === 'previewSheet' ? this.#previewTarget : this.#realTarget;
+        await target.reconcile(plan);
+        if (plan.exitPreview) {
+          await this.#chrome.exit();
+        }
       }
     } catch (error) {
       this.#onError(error);

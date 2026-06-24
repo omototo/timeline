@@ -143,7 +143,14 @@ export interface WorksheetLike {
   activate(): void;
   /** Stage a load of the named properties before the next `sync()`. */
   load(properties: string[] | string): void;
+  /** Worksheet protection (used to lock Preview surfaces read-only). */
+  protection: WorksheetProtectionLike;
   delete(): void;
+}
+
+/** The slice of `Excel.WorksheetProtection` the Preview surface uses. */
+export interface WorksheetProtectionLike {
+  protect(options?: unknown, password?: string): void;
 }
 
 /** The slice of `Excel.WorksheetCollection`. */
@@ -152,6 +159,10 @@ export interface WorksheetCollectionLike {
   onDeleted: EventToggleLike<WorksheetDeletedEventArgsLike>;
   onNameChanged: EventToggleLike<WorksheetNameChangedEventArgsLike>;
   onMoved?: EventToggleLike<WorksheetPositionChangedEventArgsLike>;
+  /** Loaded collection of worksheets (after `load('items/...')` + `sync`). */
+  items: WorksheetLike[];
+  /** Stage a load of the named collection properties before the next `sync()`. */
+  load(properties: string[] | string): void;
   add(name?: string): WorksheetLike;
   getItem(key: string): WorksheetLike;
   getItemOrNullObject(key: string): WorksheetLike & { isNullObject?: boolean };

@@ -149,6 +149,17 @@ describe('TimelinePane', () => {
     expect(screen.getByLabelText(/Histogram of/)).toBeTruthy();
   });
 
+  it('shows a PREVIEW banner only while previewing, with an Exit preview action', () => {
+    const dispatch = vi.fn();
+    const { rerender } = render(<TimelinePane view={sampleTimeline} dispatch={dispatch} />);
+    expect(screen.queryByText(/Your live sheets are hidden/)).toBeNull();
+
+    rerender(<TimelinePane view={previewMain} dispatch={dispatch} />);
+    expect(screen.getByText(/Your live sheets are hidden/)).toBeTruthy();
+    fireEvent.click(screen.getByText('Exit preview'));
+    expect(dispatch).toHaveBeenCalledWith({ type: 'returnToPresent' });
+  });
+
   it('shows an empty state when the active branch has no Steps yet', () => {
     const empty = viewWith({
       branches: [{ id: 'main', name: 'main', provisional: false, steps: [] }],
