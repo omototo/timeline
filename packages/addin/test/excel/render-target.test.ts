@@ -151,7 +151,8 @@ describe('PreviewSheetRenderTarget', () => {
     });
     const preview = requireSheet(workbook, 'Preview');
     expect(preview.visibility).toBe('VeryHidden');
-    expect(preview.protected).toBe(true); // frozen snapshot is locked read-only
+    // Not worksheet-protected: protection would block our own frozen-value writes.
+    expect(preview.protected).toBe(false);
 
     await target.reconcile({
       target: 'previewSheet',

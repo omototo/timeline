@@ -320,10 +320,26 @@ export class OfficeChangeSource implements ChangeSource {
       this.#internalSheetIds.add(args.worksheetId);
       return;
     }
+    // A sheet added DURING the session needs its own value/format handlers, or
+    // edits made on it afterwards are never tracked (the launch-time lister only
+    // wires the sheets that existed then).
+    await this.#attachSheetHandlers(args.worksheetId);
     this.#enqueue(
       this.#worksheetObservation('add', args.worksheetId, args.source),
       args.source === 'Remote',
     );
+  }
+
+  /** Wire value/format change handlers onto a newly-added worksheet. */
+  async #attachSheetHandlers(worksheetId: string): Promise<void> {
+    try {
+      await this.#run(async (ctx) => {
+        this.#registerSheetHandlers(ctx.workbook.worksheets.getItem(worksheetId));
+        await ctx.sync();
+      });
+    } catch {
+      // The sheet may already be gone (added then immediately removed); ignore.
+    }
   }
 
   #onWorksheetDeleted(args: WorksheetDeletedEventArgsLike): void {

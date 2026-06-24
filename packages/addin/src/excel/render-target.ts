@@ -110,9 +110,10 @@ abstract class BaseRenderTarget implements RenderTarget {
       }
       const sheet = ctx.workbook.worksheets.add(name);
       sheet.visibility = 'VeryHidden';
-      // A Preview surface is a frozen snapshot — lock it read-only so edits to
-      // history are impossible (full-workbook rollback, ADR-0008).
-      sheet.protection.protect();
+      // NB: a Preview surface is NOT worksheet-protected — protection blocks our
+      // own frozen-value writes on each scrub. Edits during Preview are ignored
+      // by the engine (Present-only) and the surface is wiped on exit, so the
+      // read-only guarantee comes from those, not from worksheet protection.
       await ctx.sync();
     });
   }
