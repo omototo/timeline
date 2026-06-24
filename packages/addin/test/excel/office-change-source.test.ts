@@ -315,6 +315,25 @@ describe('OfficeChangeSource', () => {
     await src.stop();
   });
 
+  it('tracks value edits on a sheet added during the session', async () => {
+    const timer = manualTimer();
+    const src = makeSource({ setTimer: timer.setTimer, clearTimer: timer.clearTimer });
+    await src.start((o) => observed.push(o));
+
+    // A new user sheet added at runtime (not present at launch).
+    const ark = workbook.addSheet('Ark1');
+    await workbook.worksheets.onAdded.fire({ worksheetId: ark.id, source: 'Local' });
+    timer.flush();
+    observed.length = 0;
+
+    // An edit ON the new sheet must now be captured (its handler was attached).
+    await ark.onChanged.fire(changedEvent({ worksheetId: ark.id, address: 'A1' }));
+    timer.flush();
+
+    expect(observed.some((o) => o.kind === 'value' && o.sheetId === ark.id)).toBe(true);
+    await src.stop();
+  });
+
   it('invokes onRemoteChange for a co-authoring (source: remote) event', async () => {
     const sheet = workbook.addSheet('Sheet1');
     const onRemoteChange = vi.fn();
