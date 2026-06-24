@@ -426,3 +426,44 @@ describe('returnToPresent (Wave 3)', () => {
     expect(engine.readShadow('Sheet1', 2, 2).value).toBe('z');
   });
 });
+
+describe('leaving preview via branch / switch tears down the rollback (ADR-0014)', () => {
+  function inPreviewOnMain(): TimelineEngineImpl {
+    const e = new TimelineEngineImpl({ keyframeStepInterval: 1000, keyframeByteThreshold: 1e9 });
+    e.ingest(valueObs('Sheet1', [cellRect(0, 0)], [[state({ value: 'a' })]])); // step 0
+    e.ingest(valueObs('Sheet1', [cellRect(0, 0)], [[state({ value: 'b' })]])); // step 1
+    e.goto(ref(0)); // enter preview -> hides reals, creates Sheet1 surface
+    return e;
+  }
+
+  it('branch from preview deletes surfaces, flags exitPreview, lands in Present', () => {
+    const e = inPreviewOnMain();
+    const env = e.branch(ref(0));
+    expect(env.reconcile?.target).toBe('realSheet');
+    expect(env.reconcile?.exitPreview).toBe(true);
+    expect(env.reconcile?.ops).toContainEqual({
+      op: 'deletePreviewSheet',
+      previewSheetId: '__preview__::Sheet1',
+    });
+    expect(e.head().mode).toBe('present');
+  });
+
+  it('switch from preview deletes surfaces and flags exitPreview', () => {
+    const e = inPreviewOnMain();
+    e.branch(ref(0)); // -> on provisional branch-1, Present
+    e.ingest(valueObs('Sheet1', [cellRect(1, 0)], [[state({ value: 'fork' })]])); // persist branch-1
+    e.goto(ref(0)); // re-enter preview
+    const env = e.switch('main');
+    expect(env.reconcile?.target).toBe('realSheet');
+    expect(env.reconcile?.exitPreview).toBe(true);
+    expect(env.reconcile?.ops.some((o) => o.op === 'deletePreviewSheet')).toBe(true);
+    expect(e.head()).toEqual({ branchId: 'main', mode: 'present' });
+  });
+
+  it('branch from Present (not preview) emits no exitPreview', () => {
+    const e = new TimelineEngineImpl();
+    e.ingest(valueObs('Sheet1', [cellRect(0, 0)], [[state({ value: 'a' })]]));
+    const env = e.branch(ref(0));
+    expect(env.reconcile?.exitPreview ?? false).toBe(false);
+  });
+});
