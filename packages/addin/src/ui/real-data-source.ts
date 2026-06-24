@@ -160,25 +160,24 @@ export class RealTimelineDataSource implements TimelineDataSource {
       }
       const plan = envelope.reconcile;
       if (plan) {
-        // Restore real sheets BEFORE a teardown plan activates/writes them — Excel
-        // cannot activate a hidden sheet. Hide them BEFORE a preview plan creates
-        // its surfaces, so only the historical view is visible.
+        // Restore real sheets BEFORE a teardown plan re-activates/writes them —
+        // Excel cannot activate a hidden sheet.
         if (plan.exitPreview) {
           await this.#chrome.exit();
         }
-        if (plan.enterPreview) {
-          await this.#chrome.enter();
-        }
         const target = plan.target === 'previewSheet' ? this.#previewTarget : this.#realTarget;
-        try {
-          await target.reconcile(plan);
-        } catch (error) {
-          // Never strand the workbook with its real sheets hidden: if the preview
-          // reconcile failed after we hid them, roll the hide back.
-          if (plan.enterPreview) {
+        await target.reconcile(plan);
+        // Hide the real sheets only AFTER the preview plan has created and
+        // ACTIVATED a preview surface — Excel forbids hiding the active worksheet,
+        // so a preview sheet must be the active one first. Roll the hide back if
+        // it half-applies, so a failure never strands all tabs hidden.
+        if (plan.enterPreview) {
+          try {
+            await this.#chrome.enter();
+          } catch (error) {
             await this.#chrome.exit();
+            throw error;
           }
-          throw error;
         }
       }
     } catch (error) {

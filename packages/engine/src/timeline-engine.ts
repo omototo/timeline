@@ -826,13 +826,20 @@ export class TimelineEngineImpl implements TimelineEngine {
     this.#activeRealSheetId = null;
     this.#head = { branchId, mode: 'present' };
 
-    const ops: ReconcileOp[] = surfaces.map((sheetId) => ({
-      op: 'deletePreviewSheet',
-      previewSheetId: previewSheetIdFor(sheetId),
-    }));
+    // Reactivate the real sheet FIRST (you cannot delete the active worksheet),
+    // then drop every Preview surface.
+    const ops: ReconcileOp[] = [];
     if (activeRealSheetId !== null) {
       ops.push({ op: 'activateSheet', sheetId: activeRealSheetId });
     }
+    ops.push(
+      ...surfaces.map(
+        (sheetId): ReconcileOp => ({
+          op: 'deletePreviewSheet',
+          previewSheetId: previewSheetIdFor(sheetId),
+        }),
+      ),
+    );
 
     const reconcile: ReconcilePlan = { target: 'realSheet', ops, exitPreview: true };
     return {
@@ -988,13 +995,20 @@ export class TimelineEngineImpl implements TimelineEngine {
    */
   #clearPreview(): { teardownOps: ReconcileOp[]; wasPreview: boolean } {
     const wasPreview = this.#projected !== null;
-    const teardownOps: ReconcileOp[] = this.#previewSurfaces.map((sheetId) => ({
-      op: 'deletePreviewSheet',
-      previewSheetId: previewSheetIdFor(sheetId),
-    }));
+    // Reactivate the real sheet FIRST (the active worksheet cannot be deleted),
+    // then drop every Preview surface.
+    const teardownOps: ReconcileOp[] = [];
     if (wasPreview && this.#activeRealSheetId !== null) {
       teardownOps.push({ op: 'activateSheet', sheetId: this.#activeRealSheetId });
     }
+    teardownOps.push(
+      ...this.#previewSurfaces.map(
+        (sheetId): ReconcileOp => ({
+          op: 'deletePreviewSheet',
+          previewSheetId: previewSheetIdFor(sheetId),
+        }),
+      ),
+    );
     this.#projected = null;
     this.#previewSurfaces = [];
     this.#activeRealSheetId = null;
