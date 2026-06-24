@@ -10,7 +10,12 @@ import {
   type HistoryStore,
   type RehydrationData,
 } from '@timeline/engine';
-import { getExcelRun, getIsSetSupported, getWorkbookKey } from '../excel/excel-host.ts';
+import {
+  getExcelRun,
+  getIsSetSupported,
+  newWorkbookGuid,
+  resolveWorkbookKey,
+} from '../excel/excel-host.ts';
 import { ExpectedWriteSet } from '../excel/expected-write-set.ts';
 import { databaseNameFor, IndexedDbStore } from '../excel/indexeddb-store.ts';
 import { OfficeChangeSource } from '../excel/office-change-source.ts';
@@ -46,7 +51,11 @@ async function openStore(): Promise<HistoryStore> {
     return new InMemoryStore();
   }
   try {
-    const store = new IndexedDbStore(globalThis.indexedDB, databaseNameFor(getWorkbookKey()));
+    // Isolate per workbook. A session-unique key (never the shared default) when
+    // the workbook can't be identified, so a new document never inherits another
+    // document's history — it gets a fresh, non-persistent timeline instead.
+    const workbookKey = (await resolveWorkbookKey()) ?? `session-${newWorkbookGuid()}`;
+    const store = new IndexedDbStore(globalThis.indexedDB, databaseNameFor(workbookKey));
     await store.init();
     return store;
   } catch (error) {
