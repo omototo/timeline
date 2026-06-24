@@ -94,9 +94,19 @@ function singleCellSlab(state: CellState): CellSlab {
  * sheet and each op carries the per-sheet preview id, so coordinates from
  * different logical sheets never collide on a single flat surface (e.g.
  * `Sheet1!A1` and `Sheet2!A1` land on distinct preview sheets).
+ *
+ * `restrictTo` (full-workbook rollback) bounds the diff to a given set of logical
+ * sheets — the sheets that exist at the target step. Without it, the diff spans
+ * every populated sheet of either state. A sheet absent from `restrictTo` is
+ * skipped: its Preview surface is being deleted, so its cells must not be written.
  */
-export function projectionDiff(from: ShadowState, to: ShadowState): ReconcileOp[] {
-  const sheetIds = new Set<SheetId>([...from.populatedSheetIds(), ...to.populatedSheetIds()]);
+export function projectionDiff(
+  from: ShadowState,
+  to: ShadowState,
+  restrictTo?: ReadonlySet<SheetId>,
+): ReconcileOp[] {
+  const sheetIds =
+    restrictTo ?? new Set<SheetId>([...from.populatedSheetIds(), ...to.populatedSheetIds()]);
   const ops: ReconcileOp[] = [];
   // Deterministic sheet order.
   for (const sheetId of [...sheetIds].sort()) {

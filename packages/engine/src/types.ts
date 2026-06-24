@@ -194,6 +194,14 @@ export type ReconcileOp =
 export interface ReconcilePlan {
   target: 'realSheet' | 'previewSheet';
   ops: ReconcileOp[];
+  /**
+   * Transition hints for full-workbook rollback (ADR-0008): `enterPreview` marks
+   * the first `goto` of a Preview session (the shell hides the real sheets);
+   * `exitPreview` marks `returnToPresent` (the shell restores them). Absent on
+   * intermediate scrubs.
+   */
+  enterPreview?: boolean;
+  exitPreview?: boolean;
 }
 
 export type PersistOp =

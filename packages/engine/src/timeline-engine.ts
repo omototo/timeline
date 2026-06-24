@@ -735,31 +735,43 @@ export class TimelineEngineImpl implements TimelineEngine {
     const target = this.#reconstructAt(ref);
     const from = this.#projected ?? new ShadowState();
 
-    // Create any preview surface we have not created yet this session — one per
-    // logical sheet touched by either the projected `from` or the `to` target.
+    // Full-workbook rollback: show EVERY sheet that existed at the target step,
+    // and nothing else. Reconcile the live preview-surface set against it —
+    // create newly-needed surfaces, delete surfaces for sheets that did not yet
+    // exist at the target (a sheet added later "disappears" as you scrub back).
+    const desired = sheetSetOf(target);
     const ops: ReconcileOp[] = [];
-    const touchedSheets = new Set<SheetId>([
-      ...from.populatedSheetIds(),
-      ...target.populatedSheetIds(),
-    ]);
-    for (const sheetId of [...touchedSheets].sort()) {
+    for (const sheetId of [...desired].sort()) {
       if (!this.#previewSurfaces.includes(sheetId)) {
-        const previewSheetId = previewSheetIdFor(sheetId);
-        ops.push({ op: 'createPreviewSheet', previewSheetId });
-        // Activate the first preview surface created in this session so the
-        // shell lands the user on a visible preview sheet.
-        if (this.#previewSurfaces.length === 0) {
-          ops.push({ op: 'activateSheet', sheetId: previewSheetId });
-        }
-        this.#previewSurfaces.push(sheetId);
+        ops.push({ op: 'createPreviewSheet', previewSheetId: previewSheetIdFor(sheetId) });
       }
     }
-    ops.push(...projectionDiff(from, target));
+    for (const sheetId of this.#previewSurfaces) {
+      if (!desired.has(sheetId)) {
+        ops.push({ op: 'deletePreviewSheet', previewSheetId: previewSheetIdFor(sheetId) });
+      }
+    }
 
+    // Cell diff, restricted to the surviving/created surfaces (a deleted surface
+    // takes its cells with it, so never diff a sheet absent at the target).
+    ops.push(...projectionDiff(from, target, desired));
+
+    // Keep the user anchored to their sheet's preview; if that sheet did not
+    // exist at the target, land on the first surface so they are never stranded.
+    const sortedDesired = [...desired].sort();
+    const anchor =
+      this.#activeRealSheetId !== null && desired.has(this.#activeRealSheetId)
+        ? this.#activeRealSheetId
+        : sortedDesired[0];
+    if (anchor !== undefined) {
+      ops.push({ op: 'activateSheet', sheetId: previewSheetIdFor(anchor) });
+    }
+
+    this.#previewSurfaces = sortedDesired;
     this.#projected = target;
     this.#head = { branchId: ref.branchId, mode: 'preview', previewStepIndex: ref.stepIndex };
 
-    const reconcile: ReconcilePlan = { target: 'previewSheet', ops };
+    const reconcile: ReconcilePlan = { target: 'previewSheet', ops, enterPreview: firstEntry };
     return {
       reconcile,
       persist: [{ op: 'setHead', head: this.head() }],
@@ -814,7 +826,7 @@ export class TimelineEngineImpl implements TimelineEngine {
       ops.push({ op: 'activateSheet', sheetId: activeRealSheetId });
     }
 
-    const reconcile: ReconcilePlan = { target: 'realSheet', ops };
+    const reconcile: ReconcilePlan = { target: 'realSheet', ops, exitPreview: true };
     return {
       reconcile,
       persist: [{ op: 'setHead', head: this.head() }],
@@ -1072,6 +1084,16 @@ export class TimelineEngineImpl implements TimelineEngine {
 // ---------------------------------------------------------------------------
 // Module-level helpers (Wave 4 lifecycle)
 // ---------------------------------------------------------------------------
+
+/**
+ * The full set of sheets that "exist" in a reconstructed state: those explicitly
+ * tracked in the sheet metadata (worksheet adds) plus any sheet that holds
+ * content. Drives full-workbook rollback — the sheets a Preview surface should
+ * mirror at a given step.
+ */
+function sheetSetOf(state: ShadowState): Set<SheetId> {
+  return new Set<SheetId>([...state.sheets().map((m) => m.sheetId), ...state.populatedSheetIds()]);
+}
 
 /** Parse the ordinal from a minted `branch-N` id, or null for the implicit `main`. */
 function parseBranchSeq(id: BranchId): number | null {

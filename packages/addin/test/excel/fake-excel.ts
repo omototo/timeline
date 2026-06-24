@@ -278,6 +278,14 @@ export class FakeWorksheet implements WorksheetLike {
     return new FakeRange(this, startRow, startColumn, rowCount, columnCount);
   }
 
+  /** Records read-only protection so tests can assert Preview surfaces are locked. */
+  protected = false;
+  readonly protection = {
+    protect: (): void => {
+      this.protected = true;
+    },
+  };
+
   activate(): void {
     this.workbook.activeSheetId = this.id;
   }
@@ -306,6 +314,14 @@ class FakeWorksheetCollection implements WorksheetCollectionLike {
   readonly onMoved = new EventHub<WorksheetPositionChangedEventArgsLike>();
 
   constructor(private readonly workbook: FakeWorkbook) {}
+
+  get items(): WorksheetLike[] {
+    return [...this.workbook.sheets];
+  }
+
+  load(): void {
+    // No-op: the fake's items are always materialized.
+  }
 
   add(name?: string): WorksheetLike {
     return this.workbook.addSheet(name);
@@ -350,6 +366,11 @@ function nullSheet(): WorksheetLike & { isNullObject: boolean } {
     },
     load: () => {
       /* no-op */
+    },
+    protection: {
+      protect: () => {
+        /* no-op */
+      },
     },
     delete: () => {
       /* no-op */

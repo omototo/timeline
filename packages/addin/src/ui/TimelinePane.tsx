@@ -199,6 +199,45 @@ export function TimelinePane({ view, dispatch, theme = 'light' }: TimelinePanePr
         </span>
       </header>
 
+      {inPreview ? (
+        <div
+          role="status"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+            marginBottom: 10,
+            padding: '7px 10px',
+            borderRadius: 8,
+            fontSize: 11,
+            fontWeight: 600,
+            color: '#9a3412',
+            background: '#fff7ed',
+            border: '1px solid #fdba74',
+          }}
+        >
+          <span>
+            Preview — viewing step {String(headIndex)}. Your live sheets are hidden and read-only.
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              dispatch({ type: 'returnToPresent' });
+            }}
+            style={{
+              ...btn(t),
+              flexShrink: 0,
+              color: '#7c2d12',
+              background: '#ffedd5',
+              border: '1px solid #fdba74',
+            }}
+          >
+            Exit preview
+          </button>
+        </div>
+      ) : null}
+
       <div
         style={{
           display: 'flex',
