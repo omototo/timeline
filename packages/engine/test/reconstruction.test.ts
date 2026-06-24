@@ -337,9 +337,11 @@ describe('returnToPresent (Wave 3)', () => {
     expect(env.reconcile?.target).toBe('realSheet');
     // Deletes the per-sheet preview surface and reactivates the REAL worksheet
     // that was active when Preview began (Sheet1) — NOT the branch id 'main'.
+    // Reactivate the real sheet FIRST (cannot delete the active worksheet),
+    // then drop the preview surface.
     expect(env.reconcile?.ops).toEqual([
-      { op: 'deletePreviewSheet', previewSheetId: '__preview__::Sheet1' },
       { op: 'activateSheet', sheetId: 'Sheet1' },
+      { op: 'deletePreviewSheet', previewSheetId: '__preview__::Sheet1' },
     ]);
     expect(engine.head()).toEqual({ branchId: 'main', mode: 'present' });
   });
@@ -364,9 +366,9 @@ describe('returnToPresent (Wave 3)', () => {
     const env = e.returnToPresent();
     expect(env.reconcile?.target).toBe('realSheet');
     expect(env.reconcile?.ops).toEqual([
+      { op: 'activateSheet', sheetId: 'Sheet1' },
       { op: 'deletePreviewSheet', previewSheetId: '__preview__::Sheet1' },
       { op: 'deletePreviewSheet', previewSheetId: '__preview__::Sheet2' },
-      { op: 'activateSheet', sheetId: 'Sheet1' },
     ]);
   });
 
