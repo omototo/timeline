@@ -11,12 +11,19 @@ export interface PreviewChrome {
   enter(): Promise<void>;
   /** Restore the real sheets to their captured visibility when Preview ends. */
   exit(): Promise<void>;
+  /**
+   * On launch, recover from a Preview interrupted by a crash/reload: if orphan
+   * preview surfaces are present, delete them and un-hide the real sheets they
+   * left hidden, so the workbook is never opened with all its tabs missing.
+   */
+  recover(): Promise<void>;
 }
 
 /** A no-op chrome for hosts/tests where the full-workbook hide is not wired. */
 export const NOOP_PREVIEW_CHROME: PreviewChrome = {
   enter: () => Promise.resolve(),
   exit: () => Promise.resolve(),
+  recover: () => Promise.resolve(),
 };
 
 export class OfficePreviewChrome implements PreviewChrome {
@@ -41,6 +48,30 @@ export class OfficePreviewChrome implements PreviewChrome {
         }
         this.#hidden.set(sheet.id, sheet.visibility);
         sheet.visibility = 'Hidden';
+      }
+      await ctx.sync();
+    });
+  }
+
+  async recover(): Promise<void> {
+    await this.#run(async (ctx) => {
+      const sheets = ctx.workbook.worksheets;
+      sheets.load('items/id,items/name,items/visibility');
+      await ctx.sync();
+      const orphans = sheets.items.filter((s) => isInternalSheetName(s.name));
+      if (orphans.length === 0) {
+        return; // No interrupted Preview to recover from.
+      }
+      for (const orphan of orphans) {
+        orphan.delete();
+      }
+      // Orphan surfaces mean a Preview was interrupted — un-hide any real sheet it
+      // left hidden (Preview hides to 'Hidden', never 'VeryHidden', so VeryHidden
+      // sheets the user hid themselves are left alone).
+      for (const sheet of sheets.items) {
+        if (!isInternalSheetName(sheet.name) && sheet.visibility === 'Hidden') {
+          sheet.visibility = 'Visible';
+        }
       }
       await ctx.sync();
     });

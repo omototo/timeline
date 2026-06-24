@@ -8,7 +8,7 @@
 
 import type { CellSlab, WorkbookSnapshot } from '@timeline/engine';
 import type { RealExcelRun } from './excel-host.ts';
-import { slabFromRange } from './office-mapping.ts';
+import { isInternalSheetName, slabFromRange } from './office-mapping.ts';
 import type { RangeLike } from './office-types.ts';
 
 export interface WorkbookSnapshotResult {
@@ -39,12 +39,17 @@ function hashSheets(sheets: WorkbookSnapshot['sheets']): string {
 export async function buildWorkbookSnapshot(run: RealExcelRun): Promise<WorkbookSnapshotResult> {
   return run(async (ctx) => {
     const collection = ctx.workbook.worksheets;
-    collection.load('items/id');
+    collection.load('items/id,items/name');
     await ctx.sync();
 
     const sheetIds: string[] = [];
     const sheets: { sheetId: string; slab: CellSlab }[] = [];
     for (const sheet of collection.items) {
+      // Engine-owned preview surfaces (e.g. a leftover after a crash) are NOT
+      // part of the user's workbook — never seed the baseline from them.
+      if (isInternalSheetName(sheet.name)) {
+        continue;
+      }
       sheetIds.push(sheet.id);
       const used = sheet.getUsedRangeOrNullObject(true);
       used.load(['values', 'formulas', 'numberFormat', 'valueTypes', 'isNullObject']);

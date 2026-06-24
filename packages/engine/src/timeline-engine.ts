@@ -598,8 +598,13 @@ export class TimelineEngineImpl implements TimelineEngine {
       });
     }
 
+    // A persisted PREVIEW head cannot be resumed — the projection is in-memory
+    // only and is gone after a reload. Land in Present so the user is never stuck
+    // in a phantom preview (returnToPresent would no-op with no projection).
     this.#head =
-      data.head === null ? { branchId: MAIN_BRANCH, mode: 'present' } : restoreHead(data.head);
+      data.head === null || data.head.mode === 'preview'
+        ? { branchId: data.head?.branchId ?? MAIN_BRANCH, mode: 'present' }
+        : restoreHead(data.head);
   }
 
   attach(observed: WorkbookSnapshot, persisted: PersistedHead | null): EffectEnvelope {
@@ -850,8 +855,8 @@ export class TimelineEngineImpl implements TimelineEngine {
    * is a Present operation).
    */
   branch(from: StepRef): EffectEnvelope {
-    // A fork is a Present op; abandon any active Preview projection silently.
-    this.#clearPreview();
+    // A fork is a Present op; tear down any active Preview (restore real sheets).
+    const { teardownOps, wasPreview } = this.#clearPreview();
 
     // Ensure the parent branch is registered so the fork records a real parent.
     const parentMeta = this.#branchMeta(from.branchId);
@@ -883,7 +888,13 @@ export class TimelineEngineImpl implements TimelineEngine {
     this.#shadow = forkState;
     this.#head = { branchId: newBranchId, mode: 'present' };
 
-    return { persist: [{ op: 'setHead', head: this.head() }] };
+    const persist: PersistOp[] = [{ op: 'setHead', head: this.head() }];
+    // Leaving Preview to fork: the shell must restore the real sheets and remove
+    // the Preview surfaces, so carry the teardown plan with the exit flag.
+    if (wasPreview) {
+      return { reconcile: { target: 'realSheet', ops: teardownOps, exitPreview: true }, persist };
+    }
+    return { persist };
   }
 
   /**
@@ -900,13 +911,15 @@ export class TimelineEngineImpl implements TimelineEngine {
    * branch in Present.
    */
   switch(branch: BranchId): EffectEnvelope {
-    // A switch is a Present op; abandon any active Preview projection first.
-    this.#clearPreview();
+    // A switch is a Present op; tear down any active Preview (restore real sheets).
+    const { teardownOps, wasPreview } = this.#clearPreview();
 
     const fromBranchId = this.#head.branchId;
     if (branch === fromBranchId) {
-      // Already on this branch in Present: nothing to do.
-      return {};
+      // Already on this branch in Present — but still leave Preview cleanly.
+      return wasPreview
+        ? { reconcile: { target: 'realSheet', ops: teardownOps, exitPreview: true } }
+        : {};
     }
 
     const persist: PersistOp[] = [];
@@ -918,13 +931,18 @@ export class TimelineEngineImpl implements TimelineEngine {
     // Reconstruct the target tip and diff the live sheets onto it (formula mode).
     const from = this.#shadow;
     const target = this.#reconstructTip(branch);
-    const ops = realSheetDiff(from, target);
+    // Preview teardown (delete surfaces, reactivate real) runs FIRST, then the
+    // branch-switch formula writes land on the now-restored real sheets.
+    const ops = [...teardownOps, ...realSheetDiff(from, target)];
 
     this.#shadow = target;
     this.#head = { branchId: branch, mode: 'present' };
 
     persist.push({ op: 'setHead', head: this.head() });
-    return { reconcile: { target: 'realSheet', ops }, persist };
+    return {
+      reconcile: { target: 'realSheet', ops, ...(wasPreview ? { exitPreview: true } : {}) },
+      persist,
+    };
   }
 
   /**
@@ -958,18 +976,29 @@ export class TimelineEngineImpl implements TimelineEngine {
   }
 
   /**
-   * Tear down any active Preview projection WITHOUT emitting effects (internal).
-   * Used by `branch`/`switch`, which are Present operations: they leave Preview
-   * implicitly. The shell will overwrite the surfaces via the new plan; the
-   * Preview surfaces themselves are the shell's concern on a mode switch.
+   * Tear down any active Preview projection, returning the reconcile ops the
+   * shell must run to leave Preview cleanly: delete every Preview surface and
+   * reactivate the real sheet. Used by `branch`/`switch` (Present operations that
+   * leave Preview implicitly) — they MUST fold these ops, with `exitPreview`,
+   * into their plan, or the shell never restores the hidden real sheets and the
+   * Preview surfaces orphan (full-workbook rollback, ADR-0014).
    */
-  #clearPreview(): void {
+  #clearPreview(): { teardownOps: ReconcileOp[]; wasPreview: boolean } {
+    const wasPreview = this.#projected !== null;
+    const teardownOps: ReconcileOp[] = this.#previewSurfaces.map((sheetId) => ({
+      op: 'deletePreviewSheet',
+      previewSheetId: previewSheetIdFor(sheetId),
+    }));
+    if (wasPreview && this.#activeRealSheetId !== null) {
+      teardownOps.push({ op: 'activateSheet', sheetId: this.#activeRealSheetId });
+    }
     this.#projected = null;
     this.#previewSurfaces = [];
     this.#activeRealSheetId = null;
     if (this.#head.mode === 'preview') {
       this.#head = { branchId: this.#head.branchId, mode: 'present' };
     }
+    return { teardownOps, wasPreview };
   }
 
   /** Mint the next deterministic branch id (`branch-1`, `branch-2`, …). */

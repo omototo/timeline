@@ -84,6 +84,11 @@ export async function createRealTimelineDataSource(): Promise<RealTimelineDataSo
   const store = await openStore();
   const realTarget = new RealSheetRenderTarget({ run: runShim, expectedWrites });
   const previewTarget = new PreviewSheetRenderTarget({ run: runShim, expectedWrites });
+  const chrome = new OfficePreviewChrome(runShim);
+
+  // Recover from a Preview interrupted by a crash/reload (delete orphan preview
+  // surfaces, un-hide stranded real sheets) BEFORE snapshotting the workbook.
+  await chrome.recover();
 
   // Restore the persisted timeline BEFORE attach reseeds the Shadow State from
   // the live workbook, so prior history survives a reload / Excel restart.
@@ -105,7 +110,7 @@ export async function createRealTimelineDataSource(): Promise<RealTimelineDataSo
     realTarget,
     previewTarget,
     changeSource,
-    chrome: new OfficePreviewChrome(runShim),
+    chrome,
     sheets: sheetIds,
     onError: (error) => {
       const message = error instanceof Error ? error.message : String(error);

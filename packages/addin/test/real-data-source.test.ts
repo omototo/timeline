@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CellSlab, ValueObservation, WorkbookSnapshot } from '@timeline/engine';
 import { InMemoryStore, TimelineEngineImpl } from '@timeline/engine';
 import { FakeChangeSource, RecordingRenderTarget } from '../src/excel/fakes.ts';
+import type { RenderTarget } from '../src/excel/seams.ts';
 import { RealTimelineDataSource } from '../src/ui/real-data-source.ts';
 
 function cell(value: unknown, valueType: 'empty' | 'number'): CellSlab {
@@ -139,6 +140,7 @@ describe('RealTimelineDataSource', () => {
           chrome.exits += 1;
           return Promise.resolve();
         },
+        recover: () => Promise.resolve(),
       },
     });
     await source.start(engine.attach(emptySheet1, null));
@@ -155,5 +157,79 @@ describe('RealTimelineDataSource', () => {
     source.dispatch({ type: 'returnToPresent' });
     await tick();
     expect(chrome.exits).toBe(1); // restored once on return
+  });
+
+  it('restores real sheets when leaving preview by BRANCHING (not just return)', async () => {
+    const engine = new TimelineEngineImpl();
+    const store = new InMemoryStore();
+    const changeSource = new FakeChangeSource();
+    const chrome = { enters: 0, exits: 0 };
+    const source = new RealTimelineDataSource({
+      engine,
+      store,
+      realTarget: new RecordingRenderTarget(),
+      previewTarget: new RecordingRenderTarget(),
+      changeSource,
+      chrome: {
+        enter: () => {
+          chrome.enters += 1;
+          return Promise.resolve();
+        },
+        exit: () => {
+          chrome.exits += 1;
+          return Promise.resolve();
+        },
+        recover: () => Promise.resolve(),
+      },
+    });
+    await source.start(engine.attach(emptySheet1, null));
+    changeSource.emit(edit(10));
+    const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+    source.dispatch({ type: 'goto', ref: { branchId: 'main', stepIndex: 0 } }); // enter preview
+    source.dispatch({ type: 'branch', from: { branchId: 'main', stepIndex: 0 } }); // branch out
+    await tick();
+    // Branching from preview MUST restore the hidden real sheets, exactly once.
+    expect(chrome.enters).toBe(1);
+    expect(chrome.exits).toBe(1);
+  });
+
+  it('rolls back the hide when a preview reconcile fails (never strands hidden sheets)', async () => {
+    const engine = new TimelineEngineImpl();
+    const store = new InMemoryStore();
+    const changeSource = new FakeChangeSource();
+    const chrome = { enters: 0, exits: 0 };
+    const failingPreview: RenderTarget = {
+      reconcile: () => Promise.reject(new Error('Excel boom')),
+    };
+    const errors: unknown[] = [];
+    const source = new RealTimelineDataSource({
+      engine,
+      store,
+      realTarget: new RecordingRenderTarget(),
+      previewTarget: failingPreview,
+      changeSource,
+      chrome: {
+        enter: () => {
+          chrome.enters += 1;
+          return Promise.resolve();
+        },
+        exit: () => {
+          chrome.exits += 1;
+          return Promise.resolve();
+        },
+        recover: () => Promise.resolve(),
+      },
+      onError: (e) => errors.push(e),
+    });
+    await source.start(engine.attach(emptySheet1, null));
+    changeSource.emit(edit(10));
+    const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+    source.dispatch({ type: 'goto', ref: { branchId: 'main', stepIndex: 0 } });
+    await tick();
+    expect(chrome.enters).toBe(1);
+    expect(chrome.exits).toBe(1); // hide rolled back despite the reconcile failure
+    expect(errors).toHaveLength(1);
   });
 });

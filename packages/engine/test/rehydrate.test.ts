@@ -146,6 +146,16 @@ describe('rehydrate', () => {
     expect(ids).toContain('branch-2');
   });
 
+  it('normalizes a persisted preview head to Present (projection is not restorable)', async () => {
+    const store = new InMemoryStore();
+    await store.setHead({ branchId: 'main', mode: 'preview', previewStepIndex: 3 });
+    const engine = new TimelineEngineImpl();
+    engine.rehydrate(await loadRehydrationData(store));
+    // A reload cannot resume a preview (the projection was in-memory) — land in
+    // Present so the user is not stuck in a phantom preview.
+    expect(engine.head()).toEqual({ branchId: 'main', mode: 'present' });
+  });
+
   it('is a no-op restore for an empty store (fresh workbook)', async () => {
     const store = new InMemoryStore();
     const engine = new TimelineEngineImpl();

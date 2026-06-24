@@ -35,4 +35,30 @@ describe('OfficePreviewChrome', () => {
     await chrome.exit(); // must not throw
     expect(workbook.syncCount).toBe(0);
   });
+
+  it('recover() deletes orphan preview surfaces and un-hides stranded real sheets', async () => {
+    const workbook = new FakeWorkbook();
+    const sheet1 = workbook.addSheet('Sheet1');
+    sheet1.visibility = 'Hidden'; // stranded hidden by an interrupted preview
+    const secret = workbook.addSheet('Secret');
+    secret.visibility = 'VeryHidden'; // a sheet the USER hid -> must stay hidden
+    const orphan = workbook.addSheet('__tl_preview_0a0a0a0a'); // crash leftover
+    orphan.visibility = 'VeryHidden';
+    const { run } = createFakeExcel(workbook);
+
+    await new OfficePreviewChrome(run).recover();
+
+    expect(workbook.findSheet('__tl_preview_0a0a0a0a')).toBeUndefined(); // orphan gone
+    expect(sheet1.visibility).toBe('Visible'); // stranded sheet recovered
+    expect(secret.visibility).toBe('VeryHidden'); // user's hidden sheet untouched
+  });
+
+  it('recover() is a no-op when there are no orphan preview surfaces', async () => {
+    const workbook = new FakeWorkbook();
+    const hidden = workbook.addSheet('Sheet1');
+    hidden.visibility = 'Hidden'; // user hid this; no crash signal -> leave it
+    const { run } = createFakeExcel(workbook);
+    await new OfficePreviewChrome(run).recover();
+    expect(hidden.visibility).toBe('Hidden');
+  });
 });
